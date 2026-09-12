@@ -1,0 +1,62 @@
+[
+  {
+    "id": "s01",
+    "name": "Downtown Convention Shelter",
+    "latitude": 13.0841,
+    "longitude": 80.2690,
+    "zone_id": "z01",
+    "capacity": 8000,
+    "current_occupancy": 2100,
+    "status": "open"
+  },
+  {
+    "id": "s02",
+    "name": "North Hills Stadium",
+    "latitude": 13.1194,
+    "longitude": 80.2598,
+    "zone_id": "z05",
+    "capacity": 12000,
+    "current_occupancy": 3400,
+    "status": "open"
+  },
+  {
+    "id": "s03",
+    "name": "University Campus Shelter",
+    "latitude": 13.1062,
+    "longitude": 80.2771,
+    "zone_id": "z09",
+    "capacity": 5000,
+    "current_occupancy": 900,
+    "status": "open"
+  },
+  {
+    "id": "s04",
+    "name": "West Market Hall",
+    "latitude": 13.0851,
+    "longitude": 80.2338,
+    "zone_id": "z08",
+    "capacity": 3500,
+    "current_occupancy": 1200,
+    "status": "open"
+  },
+  {
+    "id": "s05",
+    "name": "Airport Hangar Shelter",
+    "latitude": 13.0494,
+    "longitude": 80.2438,
+    "zone_id": "z10",
+    "capacity": 4000,
+    "current_occupancy": 600,
+    "status": "open"
+  },
+  {
+    "id": "s06",
+    "name": "Greenbelt School Shelter",
+    "latitude": 13.1242,
+    "longitude": 80.2466,
+    "zone_id": "z12",
+    "capacity": 2500,
+    "current_occupancy": 200,
+    "status": "open"
+  }
+]

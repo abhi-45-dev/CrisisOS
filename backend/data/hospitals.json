@@ -1,0 +1,57 @@
+[
+  {
+    "id": "h01",
+    "name": "Harbor General Hospital",
+    "latitude": 13.0815,
+    "longitude": 80.2728,
+    "zone_id": "z01",
+    "total_beds": 420,
+    "available_beds": 86,
+    "emergency_capacity": 60,
+    "status": "strained"
+  },
+  {
+    "id": "h02",
+    "name": "Coastal Medical Center",
+    "latitude": 13.0808,
+    "longitude": 80.2955,
+    "zone_id": "z07",
+    "total_beds": 240,
+    "available_beds": 54,
+    "emergency_capacity": 40,
+    "status": "operational"
+  },
+  {
+    "id": "h03",
+    "name": "North Hills Hospital",
+    "latitude": 13.1168,
+    "longitude": 80.2604,
+    "zone_id": "z05",
+    "total_beds": 180,
+    "available_beds": 112,
+    "emergency_capacity": 30,
+    "status": "operational"
+  },
+  {
+    "id": "h04",
+    "name": "South Community Hospital",
+    "latitude": 13.0572,
+    "longitude": 80.2661,
+    "zone_id": "z06",
+    "total_beds": 200,
+    "available_beds": 41,
+    "emergency_capacity": 28,
+    "status": "strained"
+  },
+  {
+    "id": "h05",
+    "name": "University Medical",
+    "latitude": 13.1038,
+    "longitude": 80.2764,
+    "zone_id": "z09",
+    "total_beds": 160,
+    "available_beds": 73,
+    "emergency_capacity": 24,
+    "status": "operational"
+  }
+]

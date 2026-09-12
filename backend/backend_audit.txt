@@ -1,0 +1,3854 @@
+
+===== app/geo.py =====
+from math import atan2, cos, radians, sin, sqrt
+
+from app.models.location import Hospital, Road, Shelter, Zone
+from app.models.resource import Resource
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(p1) * cos(p2) * sin(dlon / 2) ** 2
+    return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+
+
+def midpoint(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
+    return ((lat1 + lat2) / 2, (lon1 + lon2) / 2)
+
+
+def nearest(
+    lat: float,
+    lon: float,
+    items: list[Zone] | list[Hospital] | list[Shelter] | list[Resource],
+    *,
+    limit: int = 1,
+    radius_km: float | None = None,
+) -> list[tuple[object, float]]:
+    scored: list[tuple[object, float]] = []
+    for item in items:
+        dist = haversine_km(lat, lon, item.latitude, item.longitude)
+        if radius_km is not None and dist > radius_km:
+            continue
+        scored.append((item, dist))
+    scored.sort(key=lambda pair: pair[1])
+    return scored[:limit]
+
+
+def items_within_radius(
+    lat: float,
+    lon: float,
+    items: list,
+    radius_km: float,
+) -> list[tuple[object, float]]:
+    return nearest(lat, lon, items, limit=len(items), radius_km=radius_km)
+
+===== app/world.py =====
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from app.models.crisis import Crisis
+from app.models.incident import Incident
+from app.models.location import Hospital, Road, Shelter, Zone
+from app.models.resource import Resource
+from app.models.response import Scenario
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class CrisisWorld:
+    crisis: Crisis
+    zones: dict[str, Zone]
+    roads: dict[str, Road]
+    hospitals: dict[str, Hospital]
+    shelters: dict[str, Shelter]
+    resources: dict[str, Resource]
+    incidents: list[Incident] = field(default_factory=list)
+    scenarios: list[Scenario] = field(default_factory=list)
+
+    def clone(self) -> "CrisisWorld":
+        return deepcopy(self)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "crisis": self.crisis.model_dump(mode="json"),
+            "zones": [z.model_dump(mode="json") for z in self.zones.values()],
+            "roads": [r.model_dump(mode="json") for r in self.roads.values()],
+            "hospitals": [h.model_dump(mode="json") for h in self.hospitals.values()],
+            "shelters": [s.model_dump(mode="json") for s in self.shelters.values()],
+            "resources": [r.model_dump(mode="json") for r in self.resources.values()],
+            "incidents": [i.model_dump(mode="json") for i in self.incidents],
+        }
+
+===== app/tools/__init__.py =====
+from app.tools import crisis_tools, resource_tools, route_tools, simulation_tools
+
+__all__ = ["crisis_tools", "resource_tools", "route_tools", "simulation_tools"]
+
+===== app/tools/route_tools.py =====
+from app.tools.crisis_tools import find_safe_routes_tool as find_safe_routes
+from app.simulation.routes import find_safe_route
+
+__all__ = ["find_safe_route", "find_safe_routes"]
+
+===== app/tools/resource_tools.py =====
+from app.tools.crisis_tools import (
+    find_nearest_hospital,
+    find_nearest_resource,
+    find_nearest_shelter,
+    get_available_resources,
+    hospitals_within_radius,
+    resources_within_radius,
+    shelters_within_radius,
+)
+
+__all__ = [
+    "find_nearest_hospital",
+    "find_nearest_resource",
+    "find_nearest_shelter",
+    "get_available_resources",
+    "hospitals_within_radius",
+    "resources_within_radius",
+    "shelters_within_radius",
+]
+
+===== app/tools/simulation_tools.py =====
+from app.tools.crisis_tools import (
+    calculate_risk,
+    run_what_if_scenario,
+    simulate_evacuation_tool as simulate_evacuation,
+    simulate_response,
+)
+
+__all__ = [
+    "calculate_risk",
+    "run_what_if_scenario",
+    "simulate_evacuation",
+    "simulate_response",
+]
+
+===== app/tools/crisis_tools.py =====
+from typing import Any
+
+from app.exceptions import NotFoundError
+from app.geo import haversine_km, items_within_radius, nearest
+from app.models.crisis import DisasterType
+from app.models.location import RiskLevel, RoadStatus
+from app.services.alert_service import generate_alerts
+from app.services.crisis_service import crisis_service
+from app.services.scenario_service import scenario_service
+from app.simulation.engine import sample_corridor_routes, simulate_plan, simulate_world
+from app.simulation.evacuation import simulate_evacuation
+from app.simulation.resources import allocate_resources
+from app.simulation.risk import apply_risk_to_world, calculate_zone_risk
+from app.simulation.routes import find_safe_route, find_safe_routes
+from app.world import CrisisWorld
+
+
+def get_crisis_state(disaster_type: str) -> dict[str, Any]:
+    return crisis_service.get_crisis_state(disaster_type)
+
+
+def get_zone_status(zone_id: str, disaster_type: str = "flood") -> dict[str, Any]:
+    return crisis_service.get_zone_status(disaster_type, zone_id).model_dump(mode="json")
+
+
+def get_road_status(road_id: str, disaster_type: str = "flood") -> dict[str, Any]:
+    return crisis_service.get_road_status(disaster_type, road_id).model_dump(mode="json")
+
+
+def get_hospital_capacity(hospital_id: str, disaster_type: str = "flood") -> dict[str, Any]:
+    return crisis_service.get_hospital_capacity(disaster_type, hospital_id).model_dump(mode="json")
+
+
+def get_shelter_capacity(shelter_id: str, disaster_type: str = "flood") -> dict[str, Any]:
+    return crisis_service.get_shelter_capacity(disaster_type, shelter_id).model_dump(mode="json")
+
+
+def get_available_resources(disaster_type: str = "flood") -> list[dict[str, Any]]:
+    return [r.model_dump(mode="json") for r in crisis_service.get_available_resources(disaster_type)]
+
+
+def find_safe_routes_tool(origin: str, destination: str, disaster_type: str = "flood") -> list[dict[str, Any]]:
+    world = crisis_service.get_world(disaster_type)
+    return [r.model_dump(mode="json") for r in find_safe_routes(world, origin, destination)]
+
+
+def _coords(world: CrisisWorld, location: str | dict[str, Any]) -> tuple[float, float]:
+    if isinstance(location, dict):
+        return float(location["latitude"]), float(location["longitude"])
+    if location in world.zones:
+        zone = world.zones[location]
+        return zone.latitude, zone.longitude
+    raise NotFoundError(f"Unknown location '{location}'")
+
+
+def find_nearest_shelter(location: str | dict[str, Any], disaster_type: str = "flood") -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    lat, lon = _coords(world, location)
+    ranked = nearest(lat, lon, list(world.shelters.values()), limit=1)
+    if not ranked:
+        raise NotFoundError("No shelters available")
+    shelter, dist = ranked[0]
+    return {"shelter": shelter.model_dump(mode="json"), "distance_km": round(dist, 3)}
+
+
+def find_nearest_hospital(location: str | dict[str, Any], disaster_type: str = "flood") -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    lat, lon = _coords(world, location)
+    ranked = nearest(lat, lon, list(world.hospitals.values()), limit=1)
+    hospital, dist = ranked[0]
+    return {"hospital": hospital.model_dump(mode="json"), "distance_km": round(dist, 3)}
+
+
+def find_nearest_resource(
+    location: str | dict[str, Any],
+    disaster_type: str = "flood",
+    resource_type: str | None = None,
+) -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    lat, lon = _coords(world, location)
+    resources = list(world.resources.values())
+    if resource_type:
+        resources = [r for r in resources if r.type.value == resource_type]
+    ranked = nearest(lat, lon, resources, limit=1)
+    if not ranked:
+        raise NotFoundError("No matching resource")
+    resource, dist = ranked[0]
+    return {"resource": resource.model_dump(mode="json"), "distance_km": round(dist, 3)}
+
+
+def resources_within_radius(lat: float, lon: float, radius_km: float, disaster_type: str = "flood"):
+    world = crisis_service.get_world(disaster_type)
+    return [
+        {"item": item.model_dump(mode="json"), "distance_km": round(dist, 3)}
+        for item, dist in items_within_radius(lat, lon, list(world.resources.values()), radius_km)
+    ]
+
+
+def hospitals_within_radius(lat: float, lon: float, radius_km: float, disaster_type: str = "flood"):
+    world = crisis_service.get_world(disaster_type)
+    return [
+        {"item": item.model_dump(mode="json"), "distance_km": round(dist, 3)}
+        for item, dist in items_within_radius(lat, lon, list(world.hospitals.values()), radius_km)
+    ]
+
+
+def shelters_within_radius(lat: float, lon: float, radius_km: float, disaster_type: str = "flood"):
+    world = crisis_service.get_world(disaster_type)
+    return [
+        {"item": item.model_dump(mode="json"), "distance_km": round(dist, 3)}
+        for item, dist in items_within_radius(lat, lon, list(world.shelters.values()), radius_km)
+    ]
+
+
+def get_weather_data(disaster_type: str = "flood") -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    params = world.crisis.disaster_parameters
+    return {
+        "disaster_type": disaster_type,
+        "rainfall_mm": params.get("rainfall_mm"),
+        "wind_speed_kmh": params.get("wind_speed_kmh"),
+        "wind_direction": params.get("wind_direction"),
+        "water_level_m": params.get("river_water_level_m"),
+        "magnitude": params.get("magnitude"),
+        "parameters": params,
+    }
+
+
+def calculate_risk(disaster_type: str = "flood", zone_id: str | None = None) -> Any:
+    world = crisis_service.get_world(disaster_type)
+    if zone_id:
+        if zone_id not in world.zones:
+            raise NotFoundError(f"Unknown zone '{zone_id}'")
+        result = calculate_zone_risk(world, world.zones[zone_id])
+        world.zones[zone_id].risk_score = result.risk_score
+        world.zones[zone_id].risk_level = result.risk_level
+        return result.model_dump(mode="json")
+    return [r.model_dump(mode="json") for r in apply_risk_to_world(world)]
+
+
+def simulate_evacuation_tool(disaster_type: str = "flood") -> dict[str, Any]:
+    world = crisis_service.clone_world(disaster_type)
+    apply_risk_to_world(world)
+    return simulate_evacuation(world).model_dump(mode="json")
+
+
+def simulate_response(disaster_type: str, plan) -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    outcome = simulate_plan(world, plan)
+    return {
+        "plan": outcome["plan"].model_dump(mode="json"),
+        "simulation": outcome["simulation"].model_dump(mode="json"),
+        "notes": outcome["notes"],
+    }
+
+
+def run_what_if_scenario(disaster_type: str, description: str, changes) -> dict[str, Any]:
+    return scenario_service.run_scenario(disaster_type, description, changes)
+
+
+def affected_zones(disaster_type: str) -> list[dict[str, Any]]:
+    world = crisis_service.get_world(disaster_type)
+    return [z.model_dump(mode="json") for z in world.zones.values() if z.affected]
+
+
+def safe_zones(disaster_type: str) -> list[dict[str, Any]]:
+    world = crisis_service.get_world(disaster_type)
+    return [
+        z.model_dump(mode="json")
+        for z in world.zones.values()
+        if z.risk_level in {RiskLevel.LOW, RiskLevel.MODERATE} and not z.affected
+    ]
+
+
+def dangerous_roads(disaster_type: str) -> list[dict[str, Any]]:
+    world = crisis_service.get_world(disaster_type)
+    return [
+        r.model_dump(mode="json")
+        for r in world.roads.values()
+        if r.status in {RoadStatus.BLOCKED, RoadStatus.DANGEROUS}
+    ]
+
+
+def map_state(disaster_type: str) -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    apply_risk_to_world(world)
+    risks = [calculate_zone_risk(world, z).model_dump(mode="json") for z in world.zones.values()]
+    risk_areas = [
+        {
+            "zone_id": z.id,
+            "name": z.name,
+            "latitude": z.latitude,
+            "longitude": z.longitude,
+            "risk_score": z.risk_score,
+            "risk_level": z.risk_level.value,
+            "affected": z.affected,
+            "population": z.population,
+            "parameters": z.parameters,
+        }
+        for z in world.zones.values()
+        if z.risk_score >= 35
+    ]
+    epicenter = None
+    if world.crisis.disaster_type == DisasterType.EARTHQUAKE:
+        epicenter = {
+            "latitude": world.crisis.disaster_parameters.get("epicenter_latitude"),
+            "longitude": world.crisis.disaster_parameters.get("epicenter_longitude"),
+            "magnitude": world.crisis.disaster_parameters.get("magnitude"),
+        }
+    storm = None
+    if world.crisis.disaster_type == DisasterType.CYCLONE:
+        storm = {
+            "latitude": world.crisis.disaster_parameters.get("eye_latitude"),
+            "longitude": world.crisis.disaster_parameters.get("eye_longitude"),
+            "radius_km": world.crisis.disaster_parameters.get("storm_radius_km"),
+            "wind_speed_kmh": world.crisis.disaster_parameters.get("wind_speed_kmh"),
+        }
+    return {
+        "crisis": world.crisis.model_dump(mode="json"),
+        "zones": [z.model_dump(mode="json") for z in world.zones.values()],
+        "incidents": [i.model_dump(mode="json") for i in world.incidents],
+        "roads": [r.model_dump(mode="json") for r in world.roads.values()],
+        "hospitals": [h.model_dump(mode="json") for h in world.hospitals.values()],
+        "shelters": [s.model_dump(mode="json") for s in world.shelters.values()],
+        "resources": [r.model_dump(mode="json") for r in world.resources.values()],
+        "risk_areas": risk_areas,
+        "risks": risks,
+        "evacuation_routes": sample_corridor_routes(world),
+        "alerts": [a.model_dump(mode="json") for a in generate_alerts(world)],
+        "disaster_overlay": {
+            "epicenter": epicenter,
+            "storm": storm,
+            "flood_extent_zones": [z.id for z in world.zones.values() if z.affected]
+            if world.crisis.disaster_type == DisasterType.FLOOD
+            else [],
+        },
+    }
+
+
+def dashboard_summary(disaster_type: str) -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    apply_risk_to_world(world)
+    evac = simulate_evacuation(world.clone())
+    alerts = generate_alerts(world)
+    affected_pop = sum(z.population for z in world.zones.values() if z.affected)
+    critical = [z.id for z in world.zones.values() if z.risk_level == RiskLevel.CRITICAL]
+    high = [z.id for z in world.zones.values() if z.risk_level == RiskLevel.HIGH]
+    blocked = [r.id for r in world.roads.values() if r.status == RoadStatus.BLOCKED]
+    shelter_cap = sum(s.capacity for s in world.shelters.values())
+    shelter_occ = sum(s.current_occupancy for s in world.shelters.values())
+    beds = sum(h.available_beds for h in world.hospitals.values())
+    resources = sum(r.available_quantity for r in world.resources.values())
+    params = world.crisis.disaster_parameters
+    specific: dict[str, Any] = {}
+    if world.crisis.disaster_type == DisasterType.FLOOD:
+        specific = {
+            "water_level_m": params.get("river_water_level_m"),
+            "rainfall_mm": params.get("rainfall_mm"),
+            "affected_population": affected_pop,
+            "flooded_zones": [z.id for z in world.zones.values() if z.affected],
+            "blocked_roads": blocked,
+            "evacuation_progress": evac.evacuation_completion,
+            "shelter_occupancy": shelter_occ,
+        }
+    elif world.crisis.disaster_type == DisasterType.CYCLONE:
+        specific = {
+            "wind_speed_kmh": params.get("wind_speed_kmh"),
+            "wind_direction": params.get("wind_direction"),
+            "rainfall_mm": params.get("rainfall_mm"),
+            "cyclone_intensity": params.get("intensity"),
+            "affected_population": affected_pop,
+            "infrastructure_risk": round(
+                sum(float(z.parameters.get("infrastructure_risk", 0)) for z in world.zones.values())
+                / max(len(world.zones), 1),
+                3,
+            ),
+            "evacuation_progress": evac.evacuation_completion,
+        }
+    else:
+        hospital_demand = max(0, affected_pop // 80)
+        specific = {
+            "magnitude": params.get("magnitude"),
+            "epicenter": {
+                "latitude": params.get("epicenter_latitude"),
+                "longitude": params.get("epicenter_longitude"),
+            },
+            "seismic_intensity": params.get("peak_seismic_intensity"),
+            "affected_population": affected_pop,
+            "damaged_roads": [
+                r.id
+                for r in world.roads.values()
+                if r.status in {RoadStatus.BLOCKED, RoadStatus.DANGEROUS}
+            ],
+            "hospital_demand": hospital_demand,
+            "emergency_resource_demand": max(1, affected_pop // 5000),
+        }
+    return {
+        "disaster_type": disaster_type,
+        "overall_severity": world.crisis.severity,
+        "status": world.crisis.status.value,
+        "affected_population": affected_pop,
+        "critical_zones": critical,
+        "high_risk_zones": high,
+        "active_incidents": len([i for i in world.incidents if i.status.value in {"active", "reported"}]),
+        "blocked_roads": blocked,
+        "available_shelters": [s.id for s in world.shelters.values() if s.available_capacity > 0],
+        "shelter_utilization": round(shelter_occ / max(shelter_cap, 1), 4),
+        "available_hospital_beds": beds,
+        "available_emergency_resources": resources,
+        "evacuation_progress": evac.evacuation_completion,
+        "people_requiring_evacuation": evac.people_requiring_evacuation,
+        "people_evacuated_modeled": evac.people_evacuated,
+        "current_alerts": [a.model_dump(mode="json") for a in alerts],
+        "metrics": specific,
+    }
+
+
+def briefing_context(disaster_type: str) -> dict[str, Any]:
+    world = crisis_service.get_world(disaster_type)
+    apply_risk_to_world(world)
+    risks = [calculate_zone_risk(world, z) for z in world.zones.values()]
+    risks.sort(key=lambda r: r.risk_score, reverse=True)
+    return {
+        "crisis": world.crisis.model_dump(mode="json"),
+        "top_risks": [r.model_dump(mode="json") for r in risks[:6]],
+        "blocked_roads": dangerous_roads(disaster_type),
+        "resources": get_available_resources(disaster_type),
+        "incidents": [i.model_dump(mode="json") for i in world.incidents],
+        "dashboard": dashboard_summary(disaster_type),
+        "weather": get_weather_data(disaster_type),
+        "nearest_safe_shelter_from_highest_risk": find_nearest_shelter(risks[0].zone_id, disaster_type)
+        if risks
+        else None,
+    }
+
+
+__all__ = [
+    "affected_zones",
+    "briefing_context",
+    "calculate_risk",
+    "dangerous_roads",
+    "dashboard_summary",
+    "find_nearest_hospital",
+    "find_nearest_resource",
+    "find_nearest_shelter",
+    "find_safe_routes_tool",
+    "get_available_resources",
+    "get_crisis_state",
+    "get_hospital_capacity",
+    "get_road_status",
+    "get_shelter_capacity",
+    "get_weather_data",
+    "get_zone_status",
+    "haversine_km",
+    "hospitals_within_radius",
+    "map_state",
+    "resources_within_radius",
+    "run_what_if_scenario",
+    "safe_zones",
+    "shelters_within_radius",
+    "simulate_evacuation_tool",
+    "simulate_response",
+]
+
+===== app/config.py =====
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(BACKEND_ROOT / ".env")
+load_dotenv()
+
+
+def _split_origins(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+class Settings:
+    APP_NAME: str = "CrisisOS"
+    APP_VERSION: str = "0.1.0"
+    APP_DESCRIPTION: str = (
+        "AI-powered crisis intelligence, decision-support, and response "
+        "simulation platform. Human-in-the-loop only — not an operational "
+        "dispatch or infrastructure control system."
+    )
+
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    LLM_TIMEOUT_SECONDS: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+
+    CORS_ORIGINS: list[str] = _split_origins(
+        os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://localhost:5173,"
+            "http://127.0.0.1:3000,http://127.0.0.1:5173",
+        )
+    )
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    DATA_DIR: Path = BACKEND_ROOT / "data"
+
+
+settings = Settings()
+
+===== app/logging_config.py =====
+import logging
+import sys
+
+from app.config import settings
+
+
+def configure_logging() -> None:
+    level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+logger = logging.getLogger("crisisos")
+
+===== app/simulation/__init__.py =====
+from app.simulation.engine import compare_plans, simulate_plan, simulate_world
+from app.simulation.evacuation import simulate_evacuation
+from app.simulation.resources import allocate_resources
+from app.simulation.risk import apply_risk_to_world, calculate_zone_risk
+from app.simulation.routes import find_safe_route, find_safe_routes
+
+__all__ = [
+    "allocate_resources",
+    "apply_risk_to_world",
+    "calculate_zone_risk",
+    "compare_plans",
+    "find_safe_route",
+    "find_safe_routes",
+    "simulate_evacuation",
+    "simulate_plan",
+    "simulate_world",
+]
+
+===== app/simulation/evacuation.py =====
+from app.models.location import RiskLevel, RoadStatus, ShelterStatus, ZoneEvacuationStatus
+from app.models.response import SimulationResult
+from app.simulation.routes import find_safe_route
+from app.world import CrisisWorld
+
+EVAC_FRACTION = {
+    RiskLevel.CRITICAL: 0.85,
+    RiskLevel.HIGH: 0.55,
+    RiskLevel.MODERATE: 0.15,
+    RiskLevel.LOW: 0.0,
+}
+
+
+def _demand_for_zone(zone) -> int:
+    if zone.evacuation_status == ZoneEvacuationStatus.COMPLETE:
+        return 0
+    base = EVAC_FRACTION.get(zone.risk_level, 0.0)
+    if zone.evacuation_status in {ZoneEvacuationStatus.ORDERED, ZoneEvacuationStatus.IN_PROGRESS}:
+        base = max(base, 0.7)
+    if zone.evacuation_status == ZoneEvacuationStatus.ADVISED:
+        base = max(base, 0.35)
+    return int(round(zone.population * base))
+
+
+def simulate_evacuation(world: CrisisWorld) -> SimulationResult:
+    remaining_capacity = {
+        shelter.id: shelter.available_capacity for shelter in world.shelters.values()
+    }
+    road_flow: dict[str, int] = {road.id: 0 for road in world.roads.values()}
+    people_required = 0
+    people_evacuated = 0
+    bottlenecks: list[str] = []
+    unsafe_routes: list[str] = []
+    zone_results: list[dict] = []
+    assignments: list[dict] = []
+    max_time = 0.0
+
+    priority_zones = sorted(
+        world.zones.values(),
+        key=lambda z: (z.risk_score, z.population),
+        reverse=True,
+    )
+
+    for zone in priority_zones:
+        demand = _demand_for_zone(zone)
+        people_required += demand
+        remaining = demand
+        shelters = sorted(
+            world.shelters.values(),
+            key=lambda s: (
+                0 if s.status != ShelterStatus.CLOSED else 1,
+                -s.available_capacity,
+            ),
+        )
+        for shelter in shelters:
+            if remaining <= 0:
+                break
+            if shelter.status == ShelterStatus.CLOSED:
+                continue
+            free = remaining_capacity.get(shelter.id, 0)
+            if free <= 0:
+                continue
+            route = find_safe_route(world, zone.id, shelter.zone_id)
+            if not route.feasible:
+                unsafe_routes.append(
+                    f"No safe route {zone.id} -> shelter {shelter.id} ({shelter.name})"
+                )
+                continue
+            capacity_on_path = min(
+                (world.roads[rid].capacity - road_flow[rid] for rid in route.roads_used),
+                default=free,
+            )
+            if route.roads_used and capacity_on_path <= 0:
+                bottlenecks.append(
+                    f"Route from {zone.name} to {shelter.name} is at road capacity"
+                )
+                continue
+            movable = remaining if not route.roads_used else min(remaining, free, max(capacity_on_path, 0))
+            movable = min(movable, free, remaining)
+            if movable <= 0:
+                continue
+            remaining_capacity[shelter.id] -= movable
+            remaining -= movable
+            people_evacuated += movable
+            max_time = max(max_time, route.estimated_travel_time_min)
+            for rid in route.roads_used:
+                road_flow[rid] += movable
+                road = world.roads[rid]
+                if road_flow[rid] > road.capacity:
+                    bottlenecks.append(f"{road.name} exceeds flow capacity ({road_flow[rid]}/{road.capacity})")
+                if road.status == RoadStatus.DANGEROUS:
+                    unsafe_routes.append(f"{road.name} used despite dangerous status")
+            assignments.append(
+                {
+                    "from_zone": zone.id,
+                    "shelter_id": shelter.id,
+                    "people": movable,
+                    "route": route.roads_used,
+                    "travel_time_min": route.estimated_travel_time_min,
+                }
+            )
+        unmet = remaining
+        zone_results.append(
+            {
+                "zone_id": zone.id,
+                "zone_name": zone.name,
+                "demand": demand,
+                "evacuated": demand - unmet,
+                "remaining": unmet,
+            }
+        )
+
+    shelter_used = 0
+    shelter_total = 0
+    for shelter in world.shelters.values():
+        used = shelter.available_capacity - remaining_capacity.get(shelter.id, 0)
+        shelter.current_occupancy += used
+        shelter_used += shelter.current_occupancy
+        shelter_total += shelter.capacity
+
+    remaining_people = max(0, people_required - people_evacuated)
+    completion = (people_evacuated / people_required) if people_required else 1.0
+    utilization = shelter_used / shelter_total if shelter_total else 0.0
+    unmet_shelters = [
+        sid for sid, cap in remaining_capacity.items() if cap <= 0
+    ]
+
+    return SimulationResult(
+        disaster_type=world.crisis.disaster_type.value,
+        people_requiring_evacuation=people_required,
+        people_evacuated=people_evacuated,
+        people_remaining=remaining_people,
+        people_protected=people_evacuated,
+        shelter_utilization=round(utilization, 4),
+        evacuation_time_min=round(max_time, 2),
+        evacuation_completion=round(completion, 4),
+        bottlenecks=sorted(set(bottlenecks)),
+        unsafe_routes=sorted(set(unsafe_routes)),
+        unmet_demand={
+            "people_not_evacuated": remaining_people,
+            "full_shelters": unmet_shelters,
+        },
+        assignments=assignments,
+        zone_results=zone_results,
+        evidence=[
+            f"{people_evacuated} of {people_required} people assigned to shelters",
+            f"Peak modeled evacuation travel time {max_time:.1f} min",
+        ],
+    )
+
+===== app/simulation/engine.py =====
+from typing import Any
+
+from app.models.location import HospitalStatus, RoadStatus, ShelterStatus, ZoneEvacuationStatus
+from app.models.resource import ResourceStatus
+from app.models.response import PlanAction, ResponsePlan, SimulationResult
+from app.simulation.evacuation import simulate_evacuation
+from app.simulation.resources import allocate_resources
+from app.simulation.risk import apply_risk_to_world
+from app.simulation.routes import find_safe_route
+from app.world import CrisisWorld
+
+
+def _score_plan(evac: SimulationResult, alloc: SimulationResult, risk_reduction: float) -> float:
+    completion = evac.evacuation_completion
+    remaining_penalty = min(1.0, evac.people_remaining / max(evac.people_requiring_evacuation, 1))
+    bottleneck_penalty = min(0.3, 0.04 * len(evac.bottlenecks))
+    alloc_part = alloc.allocation_score / 100.0
+    reduction_part = min(1.0, max(0.0, risk_reduction / 40.0))
+    raw = (
+        40 * completion
+        + 20 * alloc_part
+        + 25 * reduction_part
+        + 15 * (1 - remaining_penalty)
+        - 100 * bottleneck_penalty
+    )
+    return round(max(0, min(100, raw)), 2)
+
+
+def apply_action(world: CrisisWorld, action: PlanAction) -> list[str]:
+    notes: list[str] = []
+    atype = action.type
+    target = action.target_id
+    qty = int(action.quantity or 1)
+
+    if atype == "evacuate_zone" and target in world.zones:
+        world.zones[target].evacuation_status = ZoneEvacuationStatus.ORDERED
+        notes.append(f"Evacuation ordered for {target}")
+    elif atype == "close_road" and target in world.roads:
+        world.roads[target].status = RoadStatus.BLOCKED
+        notes.append(f"Closed {target}")
+    elif atype == "open_road" and target in world.roads:
+        world.roads[target].status = RoadStatus.OPEN
+        world.roads[target].risk_score = min(world.roads[target].risk_score, 35)
+        notes.append(f"Opened {target}")
+    elif atype == "open_shelter" and target in world.shelters:
+        shelter = world.shelters[target]
+        shelter.status = ShelterStatus.OPEN
+        notes.append(f"Opened shelter {target}")
+    elif atype == "dispatch_ambulance":
+        notes.extend(_dispatch(world, "ambulance", target, qty))
+    elif atype == "dispatch_rescue_team":
+        notes.extend(_dispatch(world, "rescue_team", target, qty))
+    elif atype == "deploy_water_pumps":
+        notes.extend(_dispatch(world, "water_pump", target, qty))
+        if target in world.zones:
+            p = world.zones[target].parameters
+            p["drainage_capacity_pct"] = min(100, float(p.get("drainage_capacity_pct", 40)) + 12 * qty)
+            p["water_level_m"] = max(0, float(p.get("water_level_m", 0)) - 0.25 * qty)
+    elif atype == "deploy_emergency_vehicles":
+        notes.extend(_dispatch(world, "emergency_vehicle", target, qty))
+    elif atype == "move_resources" and target in world.zones:
+        notes.extend(_move_any_resource(world, target, qty))
+    elif atype == "prioritize_hospitals" and target in world.hospitals:
+        hospital = world.hospitals[target]
+        hospital.status = HospitalStatus.OPERATIONAL
+        hospital.available_beds = min(hospital.total_beds, hospital.available_beds + 10)
+        notes.append(f"Prioritized hospital {target}")
+    elif atype == "reroute_evacuation_traffic" and target in world.roads:
+        if world.roads[target].status != RoadStatus.BLOCKED:
+            world.roads[target].status = RoadStatus.OPEN
+            world.roads[target].risk_score = max(0, world.roads[target].risk_score - 15)
+        notes.append(f"Reroute priority on {target}")
+    else:
+        notes.append(f"No-op or unknown action {atype} on {target}")
+    return notes
+
+
+def _dispatch(world: CrisisWorld, resource_type: str, zone_id: str | None, qty: int) -> list[str]:
+    notes = []
+    remaining = qty
+    for res in world.resources.values():
+        if res.type.value != resource_type or res.available_quantity <= 0:
+            continue
+        take = min(remaining, res.available_quantity)
+        res.available_quantity -= take
+        remaining -= take
+        if zone_id and zone_id in world.zones:
+            res.zone_id = zone_id
+            res.latitude = world.zones[zone_id].latitude
+            res.longitude = world.zones[zone_id].longitude
+            res.status = ResourceStatus.DEPLOYED
+        notes.append(f"Dispatched {take} {resource_type} from {res.id} to {zone_id}")
+        if remaining <= 0:
+            break
+    if remaining > 0:
+        notes.append(f"Unmet {resource_type} dispatch: {remaining} units")
+    return notes
+
+
+def _move_any_resource(world: CrisisWorld, zone_id: str, qty: int) -> list[str]:
+    moved = 0
+    notes = []
+    for res in world.resources.values():
+        if res.available_quantity <= 0:
+            continue
+        take = min(qty - moved, res.available_quantity)
+        res.zone_id = zone_id
+        res.latitude = world.zones[zone_id].latitude
+        res.longitude = world.zones[zone_id].longitude
+        moved += take
+        notes.append(f"Moved {res.id} toward {zone_id}")
+        if moved >= qty:
+            break
+    return notes
+
+
+def simulate_world(world: CrisisWorld) -> dict[str, Any]:
+    before_avg = sum(z.risk_score for z in world.zones.values()) / max(len(world.zones), 1)
+    risks = apply_risk_to_world(world)
+    evac = simulate_evacuation(world)
+    alloc = allocate_resources(world)
+    after_avg = sum(z.risk_score for z in world.zones.values()) / max(len(world.zones), 1)
+    risk_reduction = max(0.0, before_avg - after_avg)
+    # Evacuation and pumps also count as protection even if zone scores don't drop much.
+    protection_boost = min(18.0, evac.evacuation_completion * 12 + alloc.allocation_score * 0.05)
+    total_reduction = risk_reduction + protection_boost
+    overall = _score_plan(evac, alloc, total_reduction)
+    evac.risk_reduction = round(total_reduction, 2)
+    evac.resource_utilization = alloc.resource_utilization
+    evac.allocation_score = alloc.allocation_score
+    evac.response_time_min = alloc.response_time_min
+    evac.overall_score = overall
+    evac.assignments = evac.assignments + alloc.assignments
+    evac.unmet_demand = {**evac.unmet_demand, **alloc.unmet_demand}
+    return {
+        "risks": [r.model_dump(mode="json") for r in risks],
+        "evacuation": evac,
+        "allocation": alloc,
+        "overall_score": overall,
+        "risk_reduction": round(total_reduction, 2),
+        "average_risk": round(after_avg, 2),
+    }
+
+
+def simulate_plan(world: CrisisWorld, plan: ResponsePlan) -> dict[str, Any]:
+    clone = world.clone()
+    notes: list[str] = []
+    for action in plan.actions:
+        notes.extend(apply_action(clone, action))
+    result = simulate_world(clone)
+    evac: SimulationResult = result["evacuation"]
+    plan.estimated_people_helped = evac.people_evacuated
+    plan.estimated_time = max(evac.evacuation_time_min, evac.response_time_min)
+    plan.estimated_risk_reduction = evac.risk_reduction
+    plan.score = evac.overall_score
+    plan.evidence = list(plan.evidence) + notes + evac.evidence
+    return {
+        "plan": plan,
+        "simulation": evac,
+        "notes": notes,
+        "world_after": clone,
+        "risks": result["risks"],
+        "allocation": result["allocation"],
+    }
+
+
+def compare_plans(world: CrisisWorld, plans: list[ResponsePlan]) -> list[dict[str, Any]]:
+    ranked = []
+    for plan in plans:
+        outcome = simulate_plan(world, plan)
+        sim: SimulationResult = outcome["simulation"]
+        ranked.append(
+            {
+                "plan_id": plan.id,
+                "title": plan.title,
+                "score": sim.overall_score,
+                "risk_reduction": sim.risk_reduction,
+                "people_protected": sim.people_evacuated,
+                "evacuation_time_min": sim.evacuation_time_min,
+                "resource_utilization": sim.resource_utilization,
+                "weaknesses": sim.bottlenecks + sim.unsafe_routes,
+                "bottlenecks": sim.bottlenecks,
+                "simulation": sim.model_dump(mode="json"),
+            }
+        )
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    for index, row in enumerate(ranked, start=1):
+        row["ranking"] = index
+    return ranked
+
+
+def sample_corridor_routes(world: CrisisWorld, limit: int = 6) -> list[dict[str, Any]]:
+    risky = [z for z in world.zones.values() if z.affected]
+    safe = sorted(world.zones.values(), key=lambda z: z.risk_score)
+    routes = []
+    for zone in risky[:4]:
+        for shelter in list(world.shelters.values())[:3]:
+            result = find_safe_route(world, zone.id, shelter.zone_id)
+            if result.feasible:
+                routes.append(result.model_dump(mode="json"))
+            if len(routes) >= limit:
+                return routes
+    if not routes and safe:
+        fallback = find_safe_route(world, safe[-1].id, safe[0].id)
+        routes.append(fallback.model_dump(mode="json"))
+    return routes
+
+===== app/simulation/risk.py =====
+from app.models.crisis import DisasterType
+from app.models.location import RiskLevel, RoadStatus, Zone, ZoneEvacuationStatus
+from app.models.response import RiskResult
+from app.world import CrisisWorld
+
+
+def score_to_level(score: float) -> RiskLevel:
+    if score >= 80:
+        return RiskLevel.CRITICAL
+    if score >= 60:
+        return RiskLevel.HIGH
+    if score >= 35:
+        return RiskLevel.MODERATE
+    return RiskLevel.LOW
+
+
+def _clamp(value: float, lo: float = 0, hi: float = 100) -> float:
+    return max(lo, min(hi, value))
+
+
+def _common_factors(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
+    connected = [
+        road
+        for road in world.roads.values()
+        if zone.id in (road.from_zone, road.to_zone)
+    ]
+    blocked = sum(1 for r in connected if r.status == RoadStatus.BLOCKED)
+    dangerous = sum(1 for r in connected if r.status == RoadStatus.DANGEROUS)
+    access = _clamp(blocked * 28 + dangerous * 16 + (20 if not connected else 0))
+    exposure = _clamp(zone.population / 450.0)
+    vuln = _clamp(zone.vulnerability * 100)
+    nearby_resources = sum(
+        1
+        for res in world.resources.values()
+        if res.zone_id == zone.id and res.available_quantity > 0
+    )
+    resource_gap = _clamp(40 - nearby_resources * 12)
+    infra = _clamp(blocked * 22 + dangerous * 14)
+    factors = [
+        {"name": "population_exposure", "score": round(exposure, 2)},
+        {"name": "vulnerability", "score": round(vuln, 2)},
+        {"name": "infrastructure_condition", "score": round(infra, 2)},
+        {"name": "accessibility", "score": round(access, 2)},
+        {"name": "local_resource_gap", "score": round(resource_gap, 2)},
+    ]
+    evidence = [
+        f"{zone.name} population {zone.population}",
+        f"{blocked} blocked and {dangerous} dangerous roads adjacent to {zone.id}",
+        f"{nearby_resources} resource caches currently in {zone.name}",
+    ]
+    return 0.12 * exposure + 0.1 * vuln + 0.08 * infra + 0.08 * access + 0.05 * resource_gap, factors, evidence
+
+
+def _flood_score(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
+    p = zone.parameters
+    rainfall = _clamp(float(p.get("rainfall_mm", 0)) / 2.2)
+    water = _clamp(float(p.get("water_level_m", 0)) / 0.05)
+    water_change = _clamp(float(p.get("water_level_change_m", 0)) / 0.012)
+    drainage = _clamp(100 - float(p.get("drainage_capacity_pct", 70)))
+    inundation = _clamp(float(p.get("inundation_risk", 0)) * 100)
+    specific = 0.22 * water + 0.14 * rainfall + 0.12 * drainage + 0.14 * inundation + 0.08 * water_change
+    factors = [
+        {"name": "rainfall", "score": round(rainfall, 2), "value": p.get("rainfall_mm")},
+        {"name": "water_level", "score": round(water, 2), "value": p.get("water_level_m")},
+        {"name": "water_level_change", "score": round(water_change, 2), "value": p.get("water_level_change_m")},
+        {"name": "drainage_capacity_deficit", "score": round(drainage, 2), "value": p.get("drainage_capacity_pct")},
+        {"name": "inundation_risk", "score": round(inundation, 2), "value": p.get("inundation_risk")},
+    ]
+    evidence = [
+        f"Rainfall {p.get('rainfall_mm', 0)} mm, water level {p.get('water_level_m', 0)} m",
+        f"Drainage capacity {p.get('drainage_capacity_pct', 0)}%",
+    ]
+    return specific, factors, evidence
+
+
+def _cyclone_score(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
+    p = zone.parameters
+    params = world.crisis.disaster_parameters
+    wind = _clamp(float(p.get("wind_speed_kmh", params.get("wind_speed_kmh", 0))) / 1.7)
+    rain = _clamp(float(p.get("rainfall_mm", params.get("rainfall_mm", 0))) / 2.0)
+    intensity = _clamp(float(params.get("intensity_index", 0.5)) * 100)
+    distance = float(p.get("storm_distance_km", 20))
+    proximity = _clamp(100 - distance * 2.2)
+    infra = _clamp(float(p.get("infrastructure_risk", 0)) * 100)
+    flood_c = _clamp(float(p.get("flooding_contribution", 0)) * 100)
+    specific = 0.2 * wind + 0.12 * rain + 0.12 * intensity + 0.12 * proximity + 0.12 * infra + 0.08 * flood_c
+    factors = [
+        {"name": "wind_speed", "score": round(wind, 2), "value": p.get("wind_speed_kmh")},
+        {"name": "rainfall", "score": round(rain, 2), "value": p.get("rainfall_mm")},
+        {"name": "storm_intensity", "score": round(intensity, 2), "value": params.get("intensity_index")},
+        {"name": "storm_proximity", "score": round(proximity, 2), "value": distance},
+        {"name": "infrastructure_risk", "score": round(infra, 2), "value": p.get("infrastructure_risk")},
+        {"name": "flooding_contribution", "score": round(flood_c, 2), "value": p.get("flooding_contribution")},
+    ]
+    evidence = [
+        f"Local wind {p.get('wind_speed_kmh', 0)} km/h, storm distance {distance} km",
+        f"Infrastructure risk {p.get('infrastructure_risk', 0)}",
+    ]
+    return specific, factors, evidence
+
+
+def _earthquake_score(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
+    p = zone.parameters
+    params = world.crisis.disaster_parameters
+    magnitude = _clamp(float(params.get("magnitude", 0)) / 0.09)
+    intensity = _clamp(float(p.get("seismic_intensity", 0)) / 0.08)
+    distance = float(p.get("distance_from_epicenter_km", 10))
+    proximity = _clamp(100 - distance * 8)
+    bldg = _clamp(float(p.get("building_vulnerability", zone.vulnerability)) * 100)
+    specific = 0.18 * magnitude + 0.22 * intensity + 0.16 * proximity + 0.16 * bldg
+    factors = [
+        {"name": "magnitude", "score": round(magnitude, 2), "value": params.get("magnitude")},
+        {"name": "seismic_intensity", "score": round(intensity, 2), "value": p.get("seismic_intensity")},
+        {"name": "distance_from_epicenter", "score": round(proximity, 2), "value": distance},
+        {"name": "building_vulnerability", "score": round(bldg, 2), "value": p.get("building_vulnerability")},
+    ]
+    evidence = [
+        f"Seismic intensity {p.get('seismic_intensity', 0)} at {distance} km from epicenter",
+        f"Event magnitude {params.get('magnitude')}",
+    ]
+    return specific, factors, evidence
+
+
+def calculate_zone_risk(world: CrisisWorld, zone: Zone) -> RiskResult:
+    common, common_factors, common_evidence = _common_factors(world, zone)
+    dtype = world.crisis.disaster_type
+    if dtype == DisasterType.FLOOD:
+        specific, factors, evidence = _flood_score(world, zone)
+    elif dtype == DisasterType.CYCLONE:
+        specific, factors, evidence = _cyclone_score(world, zone)
+    else:
+        specific, factors, evidence = _earthquake_score(world, zone)
+    score = _clamp(common + specific)
+    level = score_to_level(score)
+    return RiskResult(
+        zone_id=zone.id,
+        zone_name=zone.name,
+        risk_score=round(score, 2),
+        risk_level=level,
+        contributing_factors=factors + common_factors,
+        evidence=evidence + common_evidence,
+        disaster_type=dtype.value,
+        population=zone.population,
+        affected=level in {RiskLevel.HIGH, RiskLevel.CRITICAL} or score >= 55,
+    )
+
+
+def apply_risk_to_world(world: CrisisWorld) -> list[RiskResult]:
+    results: list[RiskResult] = []
+    for zone in world.zones.values():
+        result = calculate_zone_risk(world, zone)
+        zone.risk_score = result.risk_score
+        zone.risk_level = result.risk_level
+        zone.affected = result.affected
+        if result.risk_level == RiskLevel.CRITICAL and zone.evacuation_status == ZoneEvacuationStatus.NONE:
+            zone.evacuation_status = ZoneEvacuationStatus.ORDERED
+        elif result.risk_level == RiskLevel.HIGH and zone.evacuation_status == ZoneEvacuationStatus.NONE:
+            zone.evacuation_status = ZoneEvacuationStatus.ADVISED
+        results.append(result)
+    results.sort(key=lambda item: item.risk_score, reverse=True)
+    return results
+
+===== app/simulation/resources.py =====
+from app.geo import haversine_km
+from app.models.location import RiskLevel
+from app.models.resource import ResourceStatus, ResourceType
+from app.models.response import SimulationResult
+from app.simulation.routes import find_safe_route
+from app.world import CrisisWorld
+
+PRIORITY_TYPES = {
+    "flood": [ResourceType.WATER_PUMP, ResourceType.RESCUE_TEAM, ResourceType.EMERGENCY_VEHICLE, ResourceType.FOOD_SUPPLY],
+    "cyclone": [ResourceType.RESCUE_TEAM, ResourceType.EMERGENCY_VEHICLE, ResourceType.MEDICAL_TEAM, ResourceType.FOOD_SUPPLY],
+    "earthquake": [ResourceType.RESCUE_TEAM, ResourceType.AMBULANCE, ResourceType.MEDICAL_TEAM, ResourceType.FIRE_TRUCK],
+}
+
+
+def _need_for_zone(zone, disaster: str) -> dict[ResourceType, int]:
+    intensity = zone.risk_score / 100.0
+    pop_factor = max(1, zone.population // 8000)
+    base = max(1, int(round(pop_factor * intensity * 2)))
+    needs: dict[ResourceType, int] = {}
+    for rtype in PRIORITY_TYPES.get(disaster, list(ResourceType)):
+        needs[rtype] = base
+        if zone.risk_level == RiskLevel.CRITICAL:
+            needs[rtype] += 1
+    return needs
+
+
+def allocate_resources(world: CrisisWorld) -> SimulationResult:
+    disaster = world.crisis.disaster_type.value
+    zones = sorted(world.zones.values(), key=lambda z: z.risk_score * (1 + z.population / 50000), reverse=True)
+    assignments: list[dict] = []
+    unmet: dict[str, dict[str, int]] = {}
+    response_times: list[float] = []
+    used_units = 0
+    total_units = sum(res.quantity for res in world.resources.values())
+
+    for zone in zones:
+        if zone.risk_level == RiskLevel.LOW:
+            continue
+        needs = _need_for_zone(zone, disaster)
+        for rtype, qty in needs.items():
+            still = qty
+            candidates = [
+                res
+                for res in world.resources.values()
+                if res.type == rtype and res.available_quantity > 0 and res.status != ResourceStatus.UNAVAILABLE
+            ]
+            candidates.sort(
+                key=lambda res: haversine_km(zone.latitude, zone.longitude, res.latitude, res.longitude)
+            )
+            for res in candidates:
+                if still <= 0:
+                    break
+                take = min(still, res.available_quantity)
+                res.available_quantity -= take
+                still -= take
+                used_units += take
+                route = find_safe_route(world, res.zone_id, zone.id)
+                eta = (
+                    route.estimated_travel_time_min
+                    if route.feasible
+                    else haversine_km(zone.latitude, zone.longitude, res.latitude, res.longitude) * 4
+                )
+                response_times.append(eta)
+                assignments.append(
+                    {
+                        "resource_id": res.id,
+                        "resource_type": rtype.value,
+                        "target_zone": zone.id,
+                        "quantity": take,
+                        "estimated_response_time_min": round(eta, 2),
+                        "route_feasible": route.feasible,
+                    }
+                )
+            if still > 0:
+                unmet.setdefault(zone.id, {})[rtype.value] = still
+
+    utilization = used_units / total_units if total_units else 0.0
+    avg_time = sum(response_times) / len(response_times) if response_times else 0.0
+    coverage = 1.0 - (len(unmet) / max(len([z for z in zones if z.risk_level != RiskLevel.LOW]), 1))
+    score = round(100 * (0.55 * coverage + 0.25 * utilization + 0.2 * max(0, 1 - avg_time / 60)), 2)
+
+    return SimulationResult(
+        disaster_type=disaster,
+        resource_utilization=round(utilization, 4),
+        response_time_min=round(avg_time, 2),
+        allocation_score=score,
+        assignments=assignments,
+        unmet_demand={"resource_shortages": unmet},
+        evidence=[
+            f"Assigned {used_units} resource units across {len(assignments)} deployments",
+            f"Average modeled response time {avg_time:.1f} min",
+        ],
+    )
+
+===== app/simulation/routes.py =====
+from heapq import heappop, heappush
+
+from app.exceptions import NotFoundError
+from app.models.location import RoadStatus
+from app.models.response import RouteLeg, RouteResult
+from app.world import CrisisWorld
+
+BLOCKED = RoadStatus.BLOCKED
+DANGEROUS_PENALTY = 45.0
+CONGESTED_MULTIPLIER = 2.2
+DANGEROUS_MULTIPLIER = 3.5
+
+
+def road_cost(road) -> float | None:
+    if road.status == BLOCKED:
+        return None
+    cost = float(road.travel_time_min)
+    if road.status == RoadStatus.CONGESTED:
+        cost *= CONGESTED_MULTIPLIER
+    if road.status == RoadStatus.DANGEROUS:
+        cost *= DANGEROUS_MULTIPLIER
+        cost += DANGEROUS_PENALTY
+    cost += float(road.risk_score) * 0.15
+    return cost
+
+
+def build_adjacency(world: CrisisWorld) -> dict[str, list[tuple[str, object, float]]]:
+    graph: dict[str, list[tuple[str, object, float]]] = {zone_id: [] for zone_id in world.zones}
+    for road in world.roads.values():
+        cost = road_cost(road)
+        if cost is None:
+            continue
+        if road.from_zone in graph and road.to_zone in graph:
+            graph[road.from_zone].append((road.to_zone, road, cost))
+            graph[road.to_zone].append((road.from_zone, road, cost))
+    return graph
+
+
+def find_safe_route(world: CrisisWorld, origin: str, destination: str) -> RouteResult:
+    if origin not in world.zones:
+        raise NotFoundError(f"Unknown origin zone '{origin}'", {"id": origin})
+    if destination not in world.zones:
+        raise NotFoundError(f"Unknown destination zone '{destination}'", {"id": destination})
+    if origin == destination:
+        return RouteResult(
+            origin=origin,
+            destination=destination,
+            path_zones=[origin],
+            total_distance_km=0,
+            estimated_travel_time_min=0,
+            route_risk=0,
+            feasible=True,
+        )
+
+    graph = build_adjacency(world)
+    dist: dict[str, float] = {origin: 0.0}
+    prev: dict[str, tuple[str, object]] = {}
+    heap: list[tuple[float, str]] = [(0.0, origin)]
+    seen: set[str] = set()
+
+    while heap:
+        cost, node = heappop(heap)
+        if node in seen:
+            continue
+        seen.add(node)
+        if node == destination:
+            break
+        for neighbor, road, edge_cost in graph.get(node, []):
+            candidate = cost + edge_cost
+            if candidate < dist.get(neighbor, float("inf")):
+                dist[neighbor] = candidate
+                prev[neighbor] = (node, road)
+                heappush(heap, (candidate, neighbor))
+
+    if destination not in prev:
+        return RouteResult(
+            origin=origin,
+            destination=destination,
+            feasible=False,
+            warnings=[
+                f"No safe route from {origin} to {destination}. Blocked or disconnected roads prevent travel."
+            ],
+        )
+
+    zones = [destination]
+    roads_used = []
+    legs: list[RouteLeg] = []
+    node = destination
+    while node != origin:
+        parent, road = prev[node]
+        roads_used.append(road.id)
+        legs.append(
+            RouteLeg(
+                road_id=road.id,
+                road_name=road.name,
+                from_zone=parent,
+                to_zone=node,
+                distance_km=road.distance_km,
+                travel_time_min=road.travel_time_min,
+                status=road.status.value,
+            )
+        )
+        zones.append(parent)
+        node = parent
+    zones.reverse()
+    legs.reverse()
+    roads_used.reverse()
+
+    warnings = []
+    risk_sum = 0.0
+    travel = 0.0
+    distance = 0.0
+    for road_id in roads_used:
+        road = world.roads[road_id]
+        risk_sum += road.risk_score
+        travel += road.travel_time_min
+        distance += road.distance_km
+        if road.status == RoadStatus.DANGEROUS:
+            warnings.append(f"{road.name} ({road.id}) is dangerous and was penalized but remains passable.")
+        if road.status == RoadStatus.CONGESTED:
+            warnings.append(f"{road.name} ({road.id}) is congested.")
+
+    avg_risk = risk_sum / max(len(roads_used), 1)
+    return RouteResult(
+        origin=origin,
+        destination=destination,
+        path_zones=zones,
+        roads_used=roads_used,
+        legs=legs,
+        total_distance_km=round(distance, 2),
+        estimated_travel_time_min=round(travel, 2),
+        route_risk=round(avg_risk, 2),
+        warnings=warnings,
+        feasible=True,
+    )
+
+
+def find_safe_routes(world: CrisisWorld, origin: str, destination: str) -> list[RouteResult]:
+    primary = find_safe_route(world, origin, destination)
+    alternatives: list[RouteResult] = [primary]
+    if not primary.feasible or not primary.roads_used:
+        return alternatives
+
+    clone = world.clone()
+    worst = max(primary.roads_used, key=lambda rid: clone.roads[rid].risk_score)
+    clone.roads[worst].status = RoadStatus.BLOCKED
+    alt = find_safe_route(clone, origin, destination)
+    if alt.feasible and alt.roads_used != primary.roads_used:
+        alt.warnings.append(f"Alternative avoids {worst}.")
+        alternatives.append(alt)
+    return alternatives
+
+===== app/__init__.py =====
+"""CrisisOS backend application package."""
+
+__version__ = "0.1.0"
+
+===== app/agents/planner.py =====
+from __future__ import annotations
+
+import json
+from uuid import uuid4
+
+from app.agents.common import load_prompt
+from app.logging_config import logger
+from app.models.location import RiskLevel, RoadStatus
+from app.models.response import PlanAction, ResponsePlan
+from app.services.crisis_service import crisis_service
+from app.services.llm_service import LLMError, LLMService
+from app.simulation.engine import compare_plans, simulate_plan
+from app.simulation.risk import apply_risk_to_world
+from app.tools.crisis_tools import briefing_context
+
+
+class PlannerAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def plan(self, disaster_type: str, objective: str | None = None) -> dict:
+        world = crisis_service.get_world(disaster_type)
+        apply_risk_to_world(world)
+        heuristics = self._heuristic_plans(disaster_type, world)
+        llm_plan = None
+        if self.llm.available:
+            context = briefing_context(disaster_type)
+            prompt = (
+                f"Objective: {objective or 'Create an evacuation and resource response plan.'}\n"
+                f"TOOL FACTS:\n{json.dumps(context, default=str)[:11000]}"
+            )
+            try:
+                llm_plan = self.llm.generate_structured(prompt, ResponsePlan, system=load_prompt("planner.txt"))
+                llm_plan.id = llm_plan.id or f"plan_{uuid4().hex[:8]}"
+            except LLMError:
+                logger.error("Planner LLM failed; using heuristic plans only")
+        plans = heuristics if llm_plan is None else [llm_plan, *heuristics]
+        for plan in plans:
+            if not plan.id:
+                plan.id = f"plan_{uuid4().hex[:8]}"
+        comparison = compare_plans(world, plans)
+        simulated = [simulate_plan(world, plan) for plan in plans]
+        return {
+            "plans": [item["plan"].model_dump(mode="json") for item in simulated],
+            "comparison": comparison,
+            "primary": simulated[0]["plan"].model_dump(mode="json"),
+            "simulation": simulated[0]["simulation"].model_dump(mode="json"),
+            "llm_available": self.llm.available and llm_plan is not None,
+        }
+
+    def _heuristic_plans(self, disaster_type: str, world) -> list[ResponsePlan]:
+        critical = [z for z in world.zones.values() if z.risk_level == RiskLevel.CRITICAL]
+        high = [z for z in world.zones.values() if z.risk_level == RiskLevel.HIGH]
+        focus = critical or high or sorted(world.zones.values(), key=lambda z: z.risk_score, reverse=True)[:3]
+        blocked = [r for r in world.roads.values() if r.status == RoadStatus.DANGEROUS]
+        pumps = disaster_type == "flood"
+        actions_a = [PlanAction(type="evacuate_zone", target_id=z.id, description=f"Evacuate {z.name}") for z in focus]
+        actions_a.append(PlanAction(type="open_shelter", target_id="s02", description="Keep main stadium shelter open"))
+        actions_a.append(PlanAction(type="dispatch_rescue_team", target_id=focus[0].id, quantity=2))
+        if pumps:
+            actions_a.append(PlanAction(type="deploy_water_pumps", target_id=focus[0].id, quantity=2))
+        actions_a.append(PlanAction(type="dispatch_ambulance", target_id=focus[0].id, quantity=2))
+        plan_a = ResponsePlan(
+            id="plan_evacuate_primary",
+            title="Shelter-first evacuation",
+            objective="Move people from the highest-risk zones toward North Hills and Greenbelt shelters.",
+            actions=actions_a,
+            affected_zones=[z.id for z in focus],
+            assigned_resources=["res_04", "res_01", "res_08"],
+            evidence=["Generated from current risk ranking and shelter locations."],
+            confidence=0.7,
+            assumptions=["Road graph remains as currently reported unless an action closes a road."],
+        )
+        actions_b = [PlanAction(type="evacuate_zone", target_id=z.id) for z in focus[:2]]
+        for road in blocked[:2]:
+            actions_b.append(PlanAction(type="close_road", target_id=road.id, description=f"Close dangerous {road.name}"))
+        actions_b.append(PlanAction(type="reroute_evacuation_traffic", target_id="road_22"))
+        actions_b.append(PlanAction(type="move_resources", target_id=focus[0].id, quantity=2))
+        actions_b.append(PlanAction(type="prioritize_hospitals", target_id="h03"))
+        plan_b = ResponsePlan(
+            id="plan_corridor_protect",
+            title="Protect inland corridors",
+            objective="Close dangerous coastal/industrial links and push traffic toward hills hospitals.",
+            actions=actions_b,
+            affected_zones=[z.id for z in focus],
+            assigned_resources=["res_11", "res_05"],
+            evidence=["Uses current dangerous-road list from the live graph."],
+            confidence=0.66,
+            assumptions=["Closing dangerous roads reduces exposure even if travel times increase."],
+        )
+        return [plan_a, plan_b]
+
+===== app/agents/resource.py =====
+from __future__ import annotations
+
+import json
+
+from app.agents.common import load_prompt
+from app.logging_config import logger
+from app.models.response import AIAnalysis, ClaimBucket
+from app.services.llm_service import LLMError, LLMService
+from app.simulation.resources import allocate_resources
+from app.tools.crisis_tools import get_available_resources
+from app.services.crisis_service import crisis_service
+from app.simulation.risk import apply_risk_to_world
+
+
+class ResourceAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def analyze(self, disaster_type: str) -> AIAnalysis:
+        available = get_available_resources(disaster_type)
+        world = crisis_service.clone_world(disaster_type)
+        apply_risk_to_world(world)
+        allocation = allocate_resources(world)
+        facts = [
+            f"{item['id']} {item['type']} available {item['available_quantity']}/{item['quantity']} in {item['zone_id']}"
+            for item in available
+        ]
+        shortages = allocation.unmet_demand.get("resource_shortages", {})
+        fallback = AIAnalysis(
+            summary=f"Resource picture for {disaster_type}: {len(available)} stocks with remaining units; allocation score {allocation.allocation_score}.",
+            observations=facts[:12],
+            risks=[f"Unmet demand in {zone}: {need}" for zone, need in list(shortages.items())[:8]],
+            recommendations=[
+                "Fill unmet demand in highest-risk zones first.",
+                "Do not assign more units than available_quantity.",
+            ],
+            evidence=allocation.evidence,
+            confidence=0.77,
+            assumptions=["Travel times use the road graph; air assets ignore blocked roads."],
+            claim_buckets=ClaimBucket(
+                observed_facts=facts[:10],
+                inferences=["Shortages listed are from the greedy allocator, not an LLM."],
+                recommendations=["Stage unused caches from low-risk zones toward critical zones."],
+                assumptions=[],
+            ),
+            llm_available=False,
+            mode="deterministic_briefing",
+        )
+        if not self.llm.available:
+            return fallback
+        try:
+            result = self.llm.generate_structured(
+                json.dumps({"available": available, "allocation": allocation.model_dump(mode="json")}, default=str)[:12000],
+                AIAnalysis,
+                system=load_prompt("analyst.txt"),
+            )
+            result.evidence = allocation.evidence
+            result.llm_available = True
+            result.mode = "llm"
+            return result
+        except LLMError:
+            logger.error("Resource agent LLM failed")
+            return fallback
+
+===== app/agents/__init__.py =====
+from app.agents.analyst import AnalystAgent
+from app.agents.critic import CriticAgent
+from app.agents.planner import PlannerAgent
+from app.agents.resource import ResourceAgent
+from app.agents.risk import RiskAgent
+from app.agents.what_if import WhatIfAgent
+from app.services.llm_service import llm_service
+
+analyst_agent = AnalystAgent(llm_service)
+risk_agent = RiskAgent(llm_service)
+resource_agent = ResourceAgent(llm_service)
+planner_agent = PlannerAgent(llm_service)
+critic_agent = CriticAgent(llm_service)
+what_if_agent = WhatIfAgent(llm_service)
+
+__all__ = [
+    "analyst_agent",
+    "critic_agent",
+    "planner_agent",
+    "resource_agent",
+    "risk_agent",
+    "what_if_agent",
+]
+
+===== app/agents/common.py =====
+from pathlib import Path
+
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def load_prompt(name: str) -> str:
+    return (PROMPT_DIR / name).read_text(encoding="utf-8")
+
+===== app/agents/analyst.py =====
+from __future__ import annotations
+
+import json
+
+from app.agents.common import load_prompt
+from app.logging_config import logger
+from app.models.response import AIAnalysis, ClaimBucket
+from app.services.llm_service import LLMError, LLMService
+from app.tools.crisis_tools import briefing_context
+
+
+class AnalystAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def analyze(self, disaster_type: str, question: str | None = None) -> AIAnalysis:
+        context = briefing_context(disaster_type)
+        fallback = self._from_tools(disaster_type, context, question)
+        if not self.llm.available:
+            logger.info("Analyst using deterministic briefing; LLM unavailable")
+            return fallback
+        prompt = (
+            f"Question: {question or 'What are the most critical areas right now?'}\n\n"
+            f"BACKEND TOOL OUTPUT (facts only):\n{json.dumps(context, default=str)[:12000]}"
+        )
+        try:
+            result = self.llm.generate_structured(prompt, AIAnalysis, system=load_prompt("analyst.txt"))
+            result.llm_available = True
+            result.mode = "llm"
+            result.evidence = list(dict.fromkeys(result.evidence + fallback.evidence))
+            result.critical_zones = result.critical_zones or fallback.critical_zones
+            return result
+        except LLMError:
+            logger.error("Analyst LLM failed; returning deterministic briefing")
+            fallback.assumptions.append("Narrative produced from deterministic tools after LLM failure.")
+            return fallback
+
+    def _from_tools(self, disaster_type: str, context: dict, question: str | None) -> AIAnalysis:
+        top = context["top_risks"]
+        critical = [row["zone_id"] for row in top if row["risk_level"] == "critical"]
+        observations = [
+            f"{row['zone_name']} risk {row['risk_score']} ({row['risk_level']})"
+            for row in top[:5]
+        ]
+        dash = context["dashboard"]
+        facts = [
+            f"Disaster {disaster_type} severity {dash['overall_severity']}",
+            f"Affected population {dash['affected_population']}",
+            f"Active incidents {dash['active_incidents']}",
+            f"Blocked roads {dash['blocked_roads']}",
+        ]
+        return AIAnalysis(
+            summary=(
+                f"{disaster_type.title()} crisis is {dash['status']} with severity {dash['overall_severity']}. "
+                f"Critical zones: {', '.join(critical) or 'none'}. "
+                f"{dash['affected_population']} people sit in currently affected zones."
+            ),
+            observations=observations,
+            risks=[f"{z} is critical" for z in critical] + [f"High-risk zones: {dash['high_risk_zones']}"],
+            recommendations=[
+                "Prioritize evacuation and resources for critical zones using backend routing, not ad-hoc paths.",
+                "Keep a human operator in the loop before any field deployment.",
+            ],
+            evidence=facts + [str(row.get("evidence")) for row in top[:3]],
+            confidence=0.74,
+            assumptions=["Risk scores come from the deterministic risk engine, not an LLM."],
+            critical_zones=critical,
+            uncertainties=["Incident reports with confidence below 0.7 may be incomplete."],
+            claim_buckets=ClaimBucket(
+                observed_facts=facts,
+                inferences=[
+                    "Zones with both high population and high hazard parameters will dominate casualties if unaddressed."
+                ],
+                recommendations=["Focus operator attention on the listed critical zones first."],
+                assumptions=["Synthetic Harbor City data is internally consistent but not real telemetry."],
+            ),
+            llm_available=False,
+            mode="deterministic_briefing",
+        )
+
+===== app/agents/risk.py =====
+from __future__ import annotations
+
+import json
+
+from app.agents.common import load_prompt
+from app.logging_config import logger
+from app.models.response import AIAnalysis, ClaimBucket
+from app.services.llm_service import LLMError, LLMService
+from app.tools.crisis_tools import calculate_risk
+
+
+class RiskAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def explain(self, disaster_type: str, zone_id: str | None = None) -> AIAnalysis:
+        risks = calculate_risk(disaster_type, zone_id)
+        rows = risks if isinstance(risks, list) else [risks]
+        facts = [
+            f"{row['zone_name']} score {row['risk_score']} ({row['risk_level']}) factors={row['contributing_factors']}"
+            for row in rows[:8]
+        ]
+        fallback = AIAnalysis(
+            summary="Deterministic risk engine results for operator review.",
+            observations=facts,
+            risks=[f"{row['zone_id']} is {row['risk_level']}" for row in rows if row["risk_level"] in {"high", "critical"}],
+            recommendations=["Do not treat these scores as forecasts of casualties; they are relative hazard indices."],
+            evidence=[item for row in rows[:5] for item in row.get("evidence", [])],
+            confidence=0.8,
+            assumptions=["Weights are prototype heuristics, not calibrated loss models."],
+            critical_zones=[row["zone_id"] for row in rows if row["risk_level"] == "critical"],
+            claim_buckets=ClaimBucket(observed_facts=facts, inferences=[], recommendations=[], assumptions=[]),
+            llm_available=self.llm.available,
+            mode="deterministic_briefing" if not self.llm.available else "llm",
+        )
+        if not self.llm.available:
+            return fallback
+        try:
+            result = self.llm.generate_structured(
+                f"Explain these backend-calculated risks. Do not change the numbers.\n{json.dumps(rows[:8], default=str)}",
+                AIAnalysis,
+                system=load_prompt("analyst.txt"),
+            )
+            result.evidence = fallback.evidence
+            result.critical_zones = fallback.critical_zones
+            result.llm_available = True
+            result.mode = "llm"
+            return result
+        except LLMError:
+            logger.error("Risk agent LLM failed")
+            fallback.mode = "deterministic_briefing"
+            fallback.llm_available = False
+            return fallback
+
+===== app/agents/critic.py =====
+from __future__ import annotations
+
+import json
+
+from app.agents.common import load_prompt
+from app.logging_config import logger
+from app.models.response import Critique, ClaimBucket, ResponsePlan, SimulationResult
+from app.services.llm_service import LLMError, LLMService
+from app.simulation.engine import simulate_plan
+from app.services.crisis_service import crisis_service
+
+
+class CriticAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def critique(self, disaster_type: str, plan: ResponsePlan) -> Critique:
+        world = crisis_service.get_world(disaster_type)
+        outcome = simulate_plan(world, plan)
+        sim: SimulationResult = outcome["simulation"]
+        fallback = Critique(
+            strengths=[
+                f"Modeled score {sim.overall_score}",
+                f"People protected {sim.people_evacuated}",
+            ],
+            weaknesses=sim.bottlenecks or ["No bottleneck list produced; still review shelter headroom."],
+            risks=sim.unsafe_routes,
+            missing_information=["Field confirmation of road status", "Live hospital divert policy"],
+            recommendations=[
+                "Re-run simulation after any new event ingestion.",
+                "Do not treat score as a guarantee of lives saved.",
+            ],
+            confidence=0.72,
+            claim_buckets=ClaimBucket(
+                observed_facts=sim.evidence,
+                inferences=["Bottlenecks listed are from the evacuation flow model."],
+                recommendations=["Add a backup corridor if unsafe_routes is non-empty."],
+                assumptions=["Prototype capacities are synthetic."],
+            ),
+            llm_available=False,
+            mode="deterministic_briefing",
+        )
+        if not self.llm.available:
+            return fallback
+        try:
+            result = self.llm.generate_structured(
+                json.dumps(
+                    {"plan": plan.model_dump(mode="json"), "simulation": sim.model_dump(mode="json")},
+                    default=str,
+                )[:12000],
+                Critique,
+                system=load_prompt("critic.txt"),
+            )
+            result.llm_available = True
+            result.mode = "llm"
+            if not result.weaknesses:
+                result.weaknesses = fallback.weaknesses
+            return result
+        except LLMError:
+            logger.error("Critic LLM failed")
+            return fallback
+
+===== app/agents/what_if.py =====
+from __future__ import annotations
+
+import json
+
+from app.agents.common import load_prompt
+from app.exceptions import InvalidScenarioError, LLMError
+from app.logging_config import logger
+from app.models.response import ClaimBucket, ScenarioChange, WhatIfResult
+from app.services.llm_service import LLMService
+from app.services.scenario_service import scenario_service
+from pydantic import BaseModel, Field
+
+
+class ParsedChanges(BaseModel):
+    changes: list[ScenarioChange] = Field(default_factory=list)
+
+
+class WhatIfAgent:
+    def __init__(self, llm: LLMService):
+        self.llm = llm
+
+    def run(self, disaster_type: str, question: str) -> WhatIfResult:
+        changes = self._parse(question, disaster_type)
+        raw = scenario_service.run_scenario(disaster_type, question, changes)
+        before_evac = raw["changed_evacuation"]["before"]
+        after_evac = raw["changed_evacuation"]["after"]
+        impacts = [
+            f"Modeled people evacuated {before_evac['people_evacuated']} -> {after_evac['people_evacuated']}",
+            f"Evacuation completion {before_evac['evacuation_completion']} -> {after_evac['evacuation_completion']}",
+            f"Plan-like overall score {raw['before_sim']['overall_score']} -> {raw['after_sim']['overall_score']}",
+        ]
+        for row in raw["changed_risk"][:6]:
+            impacts.append(
+                f"{row['zone_name']} risk {row['before']} -> {row['after']} (delta {row['delta']})"
+            )
+        summary = (
+            f"Scenario '{question}' applied {len(changes)} structured change(s) without mutating live state. "
+            + "; ".join(impacts[:3])
+        )
+        recommendations = [
+            "Keep the original crisis state; this run used a cloned world.",
+            "If a key corridor is lost, pre-stage inland shelters and alternate routes.",
+        ]
+        result = WhatIfResult(
+            scenario=raw["scenario"],
+            before={
+                "average_risk": raw["before_sim"]["average_risk"],
+                "evacuation": before_evac,
+                "overall_score": raw["before_sim"]["overall_score"],
+            },
+            after={
+                "average_risk": raw["after_sim"]["average_risk"],
+                "evacuation": after_evac,
+                "overall_score": raw["after_sim"]["overall_score"],
+            },
+            changes=changes,
+            impacts=impacts,
+            recommendations=recommendations,
+            confidence=0.73 if not self.llm.available else 0.8,
+            affected_zones=raw["affected_zones"],
+            changed_routes=raw["changed_routes"],
+            changed_risk=raw["changed_risk"],
+            changed_resource_allocation=raw["changed_resource_allocation"],
+            changed_evacuation=raw["changed_evacuation"],
+            impact_summary=summary,
+            llm_available=self.llm.available,
+            mode="llm" if self.llm.available else "deterministic_briefing",
+            claim_buckets=ClaimBucket(
+                observed_facts=impacts,
+                inferences=["Deltas come from cloned-state simulation, not live mutation."],
+                recommendations=recommendations,
+                assumptions=["Parser may simplify compound natural-language requests."],
+            ),
+        )
+        if self.llm.available:
+            try:
+                explained = self.llm.generate_structured(
+                    json.dumps(
+                        {
+                            "question": question,
+                            "changes": [c.model_dump(mode="json") for c in changes],
+                            "impacts": impacts,
+                            "changed_risk": raw["changed_risk"],
+                        },
+                        default=str,
+                    )[:10000],
+                    WhatIfResult,
+                    system=load_prompt("what_if.txt"),
+                )
+                result.impact_summary = explained.impact_summary or result.impact_summary
+                result.recommendations = explained.recommendations or result.recommendations
+                result.confidence = explained.confidence
+                result.mode = "llm"
+            except LLMError:
+                logger.error("What-if explanation LLM failed; keeping deterministic summary")
+                result.llm_available = False
+                result.mode = "deterministic_briefing"
+        return result
+
+    def _parse(self, question: str, disaster_type: str) -> list[ScenarioChange]:
+        parsed: list[ScenarioChange] = []
+        if self.llm.available:
+            try:
+                structured = self.llm.generate_structured(
+                    f"Extract scenario changes for disaster={disaster_type}. User: {question}",
+                    ParsedChanges,
+                    system=load_prompt("what_if.txt"),
+                )
+                parsed = structured.changes
+            except LLMError:
+                logger.error("What-if parse LLM failed; using rules")
+        if parsed:
+            return parsed
+        try:
+            return scenario_service.parse_natural_language(question, disaster_type)
+        except InvalidScenarioError:
+            if parsed:
+                return parsed
+            raise
+
+===== app/models/crisis.py =====
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class DisasterType(str, Enum):
+    FLOOD = "flood"
+    CYCLONE = "cyclone"
+    EARTHQUAKE = "earthquake"
+
+
+class CrisisStatus(str, Enum):
+    MONITORING = "monitoring"
+    ACTIVE = "active"
+    ESCALATING = "escalating"
+    RECOVERY = "recovery"
+    CONTAINED = "contained"
+
+
+class Crisis(BaseModel):
+    id: str
+    name: str
+    disaster_type: DisasterType
+    status: CrisisStatus = CrisisStatus.ACTIVE
+    start_time: datetime
+    current_time: datetime
+    severity: float = Field(ge=0, le=10)
+    description: str
+    disaster_parameters: dict[str, Any] = Field(default_factory=dict)
+    region_name: str = "Harbor City"
+    latitude: float = 13.0827
+    longitude: float = 80.2707
+
+===== app/models/incident.py =====
+from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+class IncidentStatus(str, Enum):
+    REPORTED = "reported"
+    ACTIVE = "active"
+    CONTAINED = "contained"
+    RESOLVED = "resolved"
+
+
+class Incident(BaseModel):
+    id: str
+    crisis_id: str
+    type: str
+    description: str
+    latitude: float
+    longitude: float
+    severity: float = Field(ge=0, le=10)
+    timestamp: datetime
+    zone_id: str
+    status: IncidentStatus = IncidentStatus.ACTIVE
+    source: str = "sensor_network"
+    confidence: float = Field(ge=0, le=1, default=0.8)
+
+===== app/models/resource.py =====
+from enum import Enum
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class ResourceType(str, Enum):
+    AMBULANCE = "ambulance"
+    FIRE_TRUCK = "fire_truck"
+    RESCUE_TEAM = "rescue_team"
+    POLICE_UNIT = "police_unit"
+    HELICOPTER = "helicopter"
+    WATER_PUMP = "water_pump"
+    MEDICAL_TEAM = "medical_team"
+    EMERGENCY_VEHICLE = "emergency_vehicle"
+    FOOD_SUPPLY = "food_supply"
+
+
+class ResourceStatus(str, Enum):
+    AVAILABLE = "available"
+    DEPLOYED = "deployed"
+    LIMITED = "limited"
+    UNAVAILABLE = "unavailable"
+
+
+class Resource(BaseModel):
+    id: str
+    type: ResourceType
+    name: str
+    quantity: int = Field(ge=0)
+    available_quantity: int = Field(ge=0)
+    latitude: float
+    longitude: float
+    zone_id: str
+    status: ResourceStatus = ResourceStatus.AVAILABLE
+
+    @model_validator(mode="after")
+    def clamp_quantity(self) -> "Resource":
+        if self.available_quantity < 0:
+            self.available_quantity = 0
+        if self.available_quantity > self.quantity:
+            self.available_quantity = self.quantity
+        if self.available_quantity == 0:
+            self.status = ResourceStatus.UNAVAILABLE
+        elif self.available_quantity < self.quantity:
+            self.status = ResourceStatus.LIMITED
+        return self
+
+===== app/models/__init__.py =====
+from app.models.crisis import Crisis, DisasterType, CrisisStatus
+from app.models.incident import Incident, IncidentStatus
+from app.models.location import (
+    Alert,
+    GeoPoint,
+    Hospital,
+    HospitalStatus,
+    Road,
+    RoadStatus,
+    Shelter,
+    ShelterStatus,
+    Zone,
+    ZoneEvacuationStatus,
+    RiskLevel,
+)
+from app.models.resource import Resource, ResourceStatus, ResourceType
+from app.models.response import (
+    AIAnalysis,
+    Critique,
+    ResponsePlan,
+    RiskResult,
+    RouteResult,
+    Scenario,
+    SimulationResult,
+    WhatIfResult,
+)
+
+__all__ = [
+    "AIAnalysis",
+    "Alert",
+    "Crisis",
+    "CrisisStatus",
+    "Critique",
+    "DisasterType",
+    "GeoPoint",
+    "Hospital",
+    "HospitalStatus",
+    "Incident",
+    "IncidentStatus",
+    "Resource",
+    "ResourceStatus",
+    "ResourceType",
+    "ResponsePlan",
+    "RiskLevel",
+    "RiskResult",
+    "Road",
+    "RoadStatus",
+    "RouteResult",
+    "Scenario",
+    "Shelter",
+    "ShelterStatus",
+    "SimulationResult",
+    "WhatIfResult",
+    "Zone",
+    "ZoneEvacuationStatus",
+]
+
+===== app/models/response.py =====
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from app.models.location import RiskLevel
+
+
+class PlanAction(BaseModel):
+    type: str
+    target_id: str | None = None
+    quantity: int | float | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
+
+
+class ResponsePlan(BaseModel):
+    id: str = ""
+    title: str
+    objective: str
+    actions: list[PlanAction] = Field(default_factory=list)
+    affected_zones: list[str] = Field(default_factory=list)
+    assigned_resources: list[str] = Field(default_factory=list)
+    evacuation_routes: list[str] = Field(default_factory=list)
+    routes: list[str] = Field(default_factory=list)
+    estimated_people_helped: int = 0
+    estimated_time: float = 0
+    estimated_risk_reduction: float = 0
+    expected_outcomes: list[str] = Field(default_factory=list)
+    score: float = 0
+    confidence: float = Field(ge=0, le=1, default=0.6)
+    assumptions: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ScenarioChange(BaseModel):
+    type: str
+    target_id: str | None = None
+    field: str | None = None
+    value: Any = None
+    delta: float | None = None
+    delta_percent: float | None = None
+    new_status: str | None = None
+    description: str = ""
+
+
+class Scenario(BaseModel):
+    id: str
+    crisis_id: str
+    description: str
+    changes: list[ScenarioChange] = Field(default_factory=list)
+    created_at: datetime
+    resulting_state: dict[str, Any] | None = None
+    simulation_result: dict[str, Any] | None = None
+
+
+class RiskResult(BaseModel):
+    zone_id: str
+    zone_name: str
+    risk_score: float = Field(ge=0, le=100)
+    risk_level: RiskLevel
+    contributing_factors: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    disaster_type: str
+    population: int = 0
+    affected: bool = False
+
+
+class RouteLeg(BaseModel):
+    road_id: str
+    road_name: str
+    from_zone: str
+    to_zone: str
+    distance_km: float
+    travel_time_min: float
+    status: str
+
+
+class RouteResult(BaseModel):
+    origin: str
+    destination: str
+    path_zones: list[str] = Field(default_factory=list)
+    roads_used: list[str] = Field(default_factory=list)
+    legs: list[RouteLeg] = Field(default_factory=list)
+    total_distance_km: float = 0
+    estimated_travel_time_min: float = 0
+    route_risk: float = 0
+    warnings: list[str] = Field(default_factory=list)
+    feasible: bool = True
+
+
+class SimulationResult(BaseModel):
+    disaster_type: str
+    people_requiring_evacuation: int = 0
+    people_evacuated: int = 0
+    people_remaining: int = 0
+    people_protected: int = 0
+    shelter_utilization: float = 0
+    evacuation_time_min: float = 0
+    evacuation_completion: float = 0
+    risk_reduction: float = 0
+    response_time_min: float = 0
+    resource_utilization: float = 0
+    allocation_score: float = 0
+    overall_score: float = 0
+    bottlenecks: list[str] = Field(default_factory=list)
+    unsafe_routes: list[str] = Field(default_factory=list)
+    unmet_demand: dict[str, Any] = Field(default_factory=dict)
+    assignments: list[dict[str, Any]] = Field(default_factory=list)
+    zone_results: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ClaimBucket(BaseModel):
+    observed_facts: list[str] = Field(default_factory=list)
+    inferences: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class AIAnalysis(BaseModel):
+    summary: str
+    observations: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1, default=0.5)
+    assumptions: list[str] = Field(default_factory=list)
+    critical_zones: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    claim_buckets: ClaimBucket = Field(default_factory=ClaimBucket)
+    llm_available: bool = True
+    mode: str = "llm"
+
+
+class Critique(BaseModel):
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1, default=0.5)
+    claim_buckets: ClaimBucket = Field(default_factory=ClaimBucket)
+    llm_available: bool = True
+    mode: str = "llm"
+
+
+class WhatIfResult(BaseModel):
+    scenario: Scenario
+    before: dict[str, Any] = Field(default_factory=dict)
+    after: dict[str, Any] = Field(default_factory=dict)
+    changes: list[ScenarioChange] = Field(default_factory=list)
+    impacts: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1, default=0.55)
+    affected_zones: list[str] = Field(default_factory=list)
+    changed_routes: list[dict[str, Any]] = Field(default_factory=list)
+    changed_risk: list[dict[str, Any]] = Field(default_factory=list)
+    changed_resource_allocation: dict[str, Any] = Field(default_factory=dict)
+    changed_evacuation: dict[str, Any] = Field(default_factory=dict)
+    impact_summary: str = ""
+    llm_available: bool = True
+    mode: str = "llm"
+    claim_buckets: ClaimBucket = Field(default_factory=ClaimBucket)
+
+===== app/models/location.py =====
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MODERATE = "moderate"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ZoneEvacuationStatus(str, Enum):
+    NONE = "none"
+    ADVISED = "advised"
+    ORDERED = "ordered"
+    IN_PROGRESS = "in_progress"
+    COMPLETE = "complete"
+
+
+class RoadStatus(str, Enum):
+    OPEN = "open"
+    CONGESTED = "congested"
+    BLOCKED = "blocked"
+    DANGEROUS = "dangerous"
+
+
+class HospitalStatus(str, Enum):
+    OPERATIONAL = "operational"
+    STRAINED = "strained"
+    LIMITED = "limited"
+    OFFLINE = "offline"
+
+
+class ShelterStatus(str, Enum):
+    OPEN = "open"
+    FILLING = "filling"
+    FULL = "full"
+    CLOSED = "closed"
+
+
+class GeoPoint(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class Zone(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    population: int = Field(ge=0)
+    vulnerability: float = Field(ge=0, le=1)
+    risk_score: float = Field(ge=0, le=100, default=0)
+    risk_level: RiskLevel = RiskLevel.LOW
+    affected: bool = False
+    evacuation_status: ZoneEvacuationStatus = ZoneEvacuationStatus.NONE
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class Road(BaseModel):
+    id: str
+    name: str
+    from_zone: str
+    to_zone: str
+    distance_km: float = Field(gt=0, alias="distance")
+    travel_time_min: float = Field(gt=0, alias="travel_time")
+    capacity: int = Field(ge=0)
+    status: RoadStatus = RoadStatus.OPEN
+    risk_score: float = Field(ge=0, le=100, default=0)
+    latitude: float
+    longitude: float
+    path: list[list[float]] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def distance(self) -> float:
+        return self.distance_km
+
+    @property
+    def travel_time(self) -> float:
+        return self.travel_time_min
+
+
+class Hospital(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    zone_id: str
+    total_beds: int = Field(ge=0)
+    available_beds: int = Field(ge=0)
+    emergency_capacity: int = Field(ge=0)
+    status: HospitalStatus = HospitalStatus.OPERATIONAL
+
+    @model_validator(mode="after")
+    def clamp_beds(self) -> "Hospital":
+        if self.available_beds > self.total_beds:
+            self.available_beds = self.total_beds
+        if self.available_beds < 0:
+            self.available_beds = 0
+        return self
+
+
+class Shelter(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    zone_id: str
+    capacity: int = Field(ge=0)
+    current_occupancy: int = Field(ge=0)
+    status: ShelterStatus = ShelterStatus.OPEN
+
+    @computed_field
+    @property
+    def available_capacity(self) -> int:
+        return max(0, self.capacity - self.current_occupancy)
+
+    @model_validator(mode="after")
+    def clamp_occupancy(self) -> "Shelter":
+        if self.current_occupancy < 0:
+            self.current_occupancy = 0
+        if self.current_occupancy > self.capacity:
+            self.current_occupancy = self.capacity
+        if self.available_capacity <= 0:
+            self.status = ShelterStatus.FULL
+        elif self.current_occupancy / max(self.capacity, 1) >= 0.8:
+            self.status = ShelterStatus.FILLING
+        return self
+
+
+class Alert(BaseModel):
+    id: str
+    severity: RiskLevel
+    type: str
+    message: str
+    timestamp: str
+    affected_zone: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    disaster_type: str | None = None
+
+===== app/api/__init__.py =====
+from app.api.router import router
+
+__all__ = ["router"]
+
+===== app/api/schemas.py =====
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from app.models.response import PlanAction, ResponsePlan, ScenarioChange
+
+
+class EventRequest(BaseModel):
+    type: str = Field(description="Event type such as road_closure or rainfall_change")
+    disaster_type: str = Field(default="flood")
+    target_id: str | None = None
+    zone_id: str | None = None
+    road_id: str | None = None
+    hospital_id: str | None = None
+    shelter_id: str | None = None
+    resource_id: str | None = None
+    value: float | None = None
+    delta: float | None = None
+    delta_percent: float | None = None
+    delta_beds: int | None = None
+    available_beds: int | None = None
+    current_occupancy: int | None = None
+    available_quantity: int | None = None
+    full: bool | None = None
+    status: str | None = None
+    magnitude: float | None = None
+    delta_magnitude: float | None = None
+    seismic_intensity: float | None = None
+    readings: dict[str, Any] | None = None
+    incident: dict[str, Any] | None = None
+    description: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    severity: float | None = None
+    confidence: float | None = None
+    timestamp: datetime | None = None
+    crisis_id: str | None = None
+
+
+class SimulateRequest(BaseModel):
+    disaster_type: str = "flood"
+    plan: ResponsePlan | None = None
+    actions: list[PlanAction] = Field(default_factory=list)
+    title: str = "Operator response plan"
+    objective: str = "Reduce risk and evacuate affected populations"
+
+
+class CompareRequest(BaseModel):
+    disaster_type: str = "flood"
+    plans: list[ResponsePlan]
+
+
+class AnalyzeRequest(BaseModel):
+    disaster_type: str = "flood"
+    question: str | None = "What are the most critical areas right now?"
+
+
+class PlanRequest(BaseModel):
+    disaster_type: str = "flood"
+    objective: str | None = "Create an evacuation plan."
+
+
+class WhatIfRequest(BaseModel):
+    disaster_type: str = "flood"
+    question: str
+
+
+class ScenarioCreateRequest(BaseModel):
+    disaster_type: str = "flood"
+    description: str
+    changes: list[ScenarioChange]
+
+
+class RouteQuery(BaseModel):
+    origin: str
+    destination: str
+    disaster_type: str = "flood"
+
+
+class GeoQuery(BaseModel):
+    latitude: float
+    longitude: float
+    radius_km: float = 5
+    disaster_type: str = "flood"
+    resource_type: str | None = None
+
+===== app/api/errors.py =====
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
+from app.exceptions import CrisisOSError
+from app.logging_config import logger
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(CrisisOSError)
+    async def crisisos_handler(_request: Request, exc: CrisisOSError) -> JSONResponse:
+        logger.error("API error %s: %s", exc.error_code, exc.message)
+        return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        logger.error("Malformed request: %s", exc.errors())
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "malformed_request",
+                "message": "Request validation failed",
+                "details": {"errors": exc.errors()},
+            },
+        )
+
+    @app.exception_handler(ValidationError)
+    async def pydantic_handler(_request: Request, exc: ValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "malformed_request",
+                "message": "Data validation failed",
+                "details": {"errors": exc.errors()},
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_handler(_request: Request, exc: Exception) -> JSONResponse:
+        logger.error("Unhandled error: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "internal_error", "message": "An unexpected error occurred"},
+        )
+
+===== app/api/router.py =====
+from uuid import uuid4
+
+from fastapi import APIRouter, Query
+
+from app.agents import analyst_agent, critic_agent, planner_agent, what_if_agent
+from app.api.schemas import (
+    AnalyzeRequest,
+    CompareRequest,
+    EventRequest,
+    GeoQuery,
+    PlanRequest,
+    RouteQuery,
+    ScenarioCreateRequest,
+    SimulateRequest,
+    WhatIfRequest,
+)
+from app.config import settings
+from app.models.response import ResponsePlan
+from app.services.alert_service import generate_alerts
+from app.services.crisis_service import crisis_service, parse_disaster
+from app.services.llm_service import llm_service
+from app.services.scenario_service import scenario_service
+from app.simulation.engine import compare_plans, simulate_plan
+from app.simulation.risk import apply_risk_to_world, calculate_zone_risk
+from app.simulation.routes import find_safe_routes
+from app.tools import crisis_tools
+
+router = APIRouter()
+
+
+@router.get("/", tags=["meta"])
+def root():
+    return {
+        "name": settings.APP_NAME,
+        "status": "online",
+        "version": settings.APP_VERSION,
+        "supported_disasters": ["flood", "cyclone", "earthquake"],
+        "docs": "/docs",
+        "human_in_the_loop": True,
+    }
+
+
+@router.get("/health", tags=["meta"])
+def health():
+    return {
+        "status": "healthy",
+        "llm_configured": llm_service.available,
+        "crises_loaded": [c.id for c in crisis_service.list_crises()],
+    }
+
+
+@router.get("/crisis", tags=["crisis"])
+def list_crisis():
+    return {"crises": [c.model_dump(mode="json") for c in crisis_service.list_crises()]}
+
+
+@router.get("/crisis/state", tags=["crisis"])
+def crisis_state(disaster_type: str | None = Query(default=None)):
+    return crisis_service.get_crisis_state(disaster_type)
+
+
+@router.get("/crisis/{disaster_type}", tags=["crisis"])
+def crisis_by_type(disaster_type: str):
+    parse_disaster(disaster_type)
+    world = crisis_service.get_world(disaster_type)
+    apply_risk_to_world(world)
+    dash = crisis_tools.dashboard_summary(disaster_type)
+    return {
+        "crisis": world.crisis.model_dump(mode="json"),
+        "metrics": dash["metrics"],
+        "dashboard": dash,
+        "incidents": [i.model_dump(mode="json") for i in world.incidents],
+        "affected_zones": crisis_tools.affected_zones(disaster_type),
+        "roads": [r.model_dump(mode="json") for r in world.roads.values()],
+        "shelters": [s.model_dump(mode="json") for s in world.shelters.values()],
+        "hospitals": [h.model_dump(mode="json") for h in world.hospitals.values()],
+        "resources": [r.model_dump(mode="json") for r in world.resources.values()],
+        "alerts": dash["current_alerts"],
+        "evacuation": {
+            "progress": dash["evacuation_progress"],
+            "people_requiring_evacuation": dash["people_requiring_evacuation"],
+            "people_evacuated_modeled": dash["people_evacuated_modeled"],
+        },
+        "simulation": crisis_tools.simulate_evacuation_tool(disaster_type),
+    }
+
+
+@router.get("/map/state", tags=["map"])
+def map_state(disaster_type: str = Query(default="flood")):
+    parse_disaster(disaster_type)
+    return crisis_tools.map_state(disaster_type)
+
+
+@router.get("/map/{disaster_type}", tags=["map"])
+def map_by_type(disaster_type: str):
+    parse_disaster(disaster_type)
+    return crisis_tools.map_state(disaster_type)
+
+
+@router.get("/incidents", tags=["entities"])
+def incidents(disaster_type: str = Query(default="flood")):
+    return {"incidents": [i.model_dump(mode="json") for i in crisis_service.get_incidents(disaster_type)]}
+
+
+@router.get("/zones", tags=["entities"])
+def zones(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    apply_risk_to_world(world)
+    return {"zones": [z.model_dump(mode="json") for z in world.zones.values()]}
+
+
+@router.get("/roads", tags=["entities"])
+def roads(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    return {"roads": [r.model_dump(mode="json") for r in world.roads.values()]}
+
+
+@router.get("/resources", tags=["entities"])
+def resources(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    return {"resources": [r.model_dump(mode="json") for r in world.resources.values()]}
+
+
+@router.get("/hospitals", tags=["entities"])
+def hospitals(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    return {"hospitals": [h.model_dump(mode="json") for h in world.hospitals.values()]}
+
+
+@router.get("/shelters", tags=["entities"])
+def shelters(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    return {"shelters": [s.model_dump(mode="json") for s in world.shelters.values()]}
+
+
+@router.get("/risk", tags=["simulation"])
+def risk(disaster_type: str = Query(default="flood"), zone_id: str | None = None):
+    world = crisis_service.get_world(disaster_type)
+    if zone_id:
+        zone = crisis_service.get_zone_status(disaster_type, zone_id)
+        return calculate_zone_risk(world, zone).model_dump(mode="json")
+    return {"results": [r.model_dump(mode="json") for r in apply_risk_to_world(world)]}
+
+
+@router.get("/routes", tags=["simulation"])
+def routes(
+    origin: str = Query(...),
+    destination: str = Query(...),
+    disaster_type: str = Query(default="flood"),
+):
+    world = crisis_service.get_world(disaster_type)
+    results = find_safe_routes(world, origin, destination)
+    return {"routes": [r.model_dump(mode="json") for r in results]}
+
+
+@router.post("/routes", tags=["simulation"])
+def routes_post(body: RouteQuery):
+    world = crisis_service.get_world(body.disaster_type)
+    results = find_safe_routes(world, body.origin, body.destination)
+    return {"routes": [r.model_dump(mode="json") for r in results]}
+
+
+@router.get("/geo/nearest-shelter", tags=["geo"])
+def nearest_shelter(zone_id: str, disaster_type: str = "flood"):
+    return crisis_tools.find_nearest_shelter(zone_id, disaster_type)
+
+
+@router.get("/geo/nearest-hospital", tags=["geo"])
+def nearest_hospital(zone_id: str, disaster_type: str = "flood"):
+    return crisis_tools.find_nearest_hospital(zone_id, disaster_type)
+
+
+@router.get("/geo/nearest-resource", tags=["geo"])
+def nearest_resource(zone_id: str, disaster_type: str = "flood", resource_type: str | None = None):
+    return crisis_tools.find_nearest_resource(zone_id, disaster_type, resource_type)
+
+
+@router.post("/geo/within-radius", tags=["geo"])
+def within_radius(body: GeoQuery):
+    return {
+        "resources": crisis_tools.resources_within_radius(
+            body.latitude, body.longitude, body.radius_km, body.disaster_type
+        ),
+        "hospitals": crisis_tools.hospitals_within_radius(
+            body.latitude, body.longitude, body.radius_km, body.disaster_type
+        ),
+        "shelters": crisis_tools.shelters_within_radius(
+            body.latitude, body.longitude, body.radius_km, body.disaster_type
+        ),
+    }
+
+
+@router.get("/alerts", tags=["alerts"])
+def alerts(disaster_type: str = Query(default="flood")):
+    world = crisis_service.get_world(disaster_type)
+    return {"alerts": [a.model_dump(mode="json") for a in generate_alerts(world)]}
+
+
+@router.get("/dashboard/summary", tags=["dashboard"])
+def dashboard(disaster_type: str = Query(default="flood")):
+    return crisis_tools.dashboard_summary(disaster_type)
+
+
+@router.post("/events", tags=["events"])
+def ingest_event(body: EventRequest):
+    return crisis_service.apply_event(body.model_dump(exclude_none=True))
+
+
+@router.post("/simulate", tags=["simulation"])
+def simulate(body: SimulateRequest):
+    parse_disaster(body.disaster_type)
+    plan = body.plan or ResponsePlan(
+        id=f"plan_{uuid4().hex[:8]}",
+        title=body.title,
+        objective=body.objective,
+        actions=body.actions,
+    )
+    if not plan.id:
+        plan.id = f"plan_{uuid4().hex[:8]}"
+    world = crisis_service.get_world(body.disaster_type)
+    outcome = simulate_plan(world, plan)
+    return {
+        "plan": outcome["plan"].model_dump(mode="json"),
+        "simulation": outcome["simulation"].model_dump(mode="json"),
+        "notes": outcome["notes"],
+    }
+
+
+@router.post("/simulate/compare", tags=["simulation"])
+def simulate_compare(body: CompareRequest):
+    parse_disaster(body.disaster_type)
+    world = crisis_service.get_world(body.disaster_type)
+    ranking = compare_plans(world, body.plans)
+    return {"ranking": ranking}
+
+
+@router.post("/ai/analyze", tags=["ai"])
+def ai_analyze(body: AnalyzeRequest):
+    analysis = analyst_agent.analyze(body.disaster_type, body.question)
+    return analysis.model_dump(mode="json")
+
+
+@router.post("/ai/plan", tags=["ai"])
+def ai_plan(body: PlanRequest):
+    return planner_agent.plan(body.disaster_type, body.objective)
+
+
+@router.post("/ai/what-if", tags=["ai"])
+def ai_what_if(body: WhatIfRequest):
+    return what_if_agent.run(body.disaster_type, body.question).model_dump(mode="json")
+
+
+@router.post("/ai/critique", tags=["ai"])
+def ai_critique(body: SimulateRequest):
+    plan = body.plan or ResponsePlan(title=body.title, objective=body.objective, actions=body.actions)
+    return critic_agent.critique(body.disaster_type, plan).model_dump(mode="json")
+
+
+@router.post("/scenarios", tags=["scenarios"])
+def create_scenario(body: ScenarioCreateRequest):
+    raw = scenario_service.run_scenario(body.disaster_type, body.description, body.changes)
+    return {
+        "scenario": raw["scenario"].model_dump(mode="json"),
+        "affected_zones": raw["affected_zones"],
+        "changed_risk": raw["changed_risk"],
+        "changed_evacuation": raw["changed_evacuation"],
+        "changed_resource_allocation": raw["changed_resource_allocation"],
+        "changed_routes": raw["changed_routes"],
+    }
+
+
+@router.get("/scenarios", tags=["scenarios"])
+def list_scenarios(disaster_type: str | None = None):
+    return {"scenarios": [s.model_dump(mode="json") for s in scenario_service.list_scenarios(disaster_type)]}
+
+===== app/exceptions.py =====
+from typing import Any
+
+
+class CrisisOSError(Exception):
+    status_code = 400
+    error_code = "crisisos_error"
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "error": self.error_code,
+            "message": self.message,
+        }
+        if self.details:
+            payload["details"] = self.details
+        return payload
+
+
+class NotFoundError(CrisisOSError):
+    status_code = 404
+    error_code = "not_found"
+
+
+class InvalidDisasterError(CrisisOSError):
+    status_code = 400
+    error_code = "invalid_disaster_type"
+
+
+class InvalidEventError(CrisisOSError):
+    status_code = 422
+    error_code = "invalid_event"
+
+
+class InvalidScenarioError(CrisisOSError):
+    status_code = 422
+    error_code = "invalid_scenario"
+
+
+class SimulationError(CrisisOSError):
+    status_code = 400
+    error_code = "simulation_error"
+
+
+class CapacityError(CrisisOSError):
+    status_code = 409
+    error_code = "insufficient_capacity"
+
+
+class ResourceUnavailableError(CrisisOSError):
+    status_code = 409
+    error_code = "resource_unavailable"
+
+
+class BlockedRouteError(CrisisOSError):
+    status_code = 409
+    error_code = "blocked_route"
+
+
+class LLMError(CrisisOSError):
+    status_code = 503
+    error_code = "llm_unavailable"
+
+===== app/main.py =====
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.errors import register_exception_handlers
+from app.api.router import router
+from app.config import settings
+from app.logging_config import configure_logging
+
+configure_logging()
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description=settings.APP_DESCRIPTION,
+    version=settings.APP_VERSION,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+register_exception_handlers(app)
+app.include_router(router)
+
+===== app/services/crisis_service.py =====
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from app.config import settings
+from app.exceptions import InvalidDisasterError, InvalidEventError, NotFoundError
+from app.logging_config import logger
+from app.models.crisis import Crisis, DisasterType
+from app.models.incident import Incident, IncidentStatus
+from app.models.location import Hospital, HospitalStatus, Road, RoadStatus, Shelter, ShelterStatus, Zone
+from app.models.resource import Resource, ResourceStatus
+from app.simulation.risk import apply_risk_to_world
+from app.world import CrisisWorld
+
+DISASTER_TYPES = {item.value: item for item in DisasterType}
+
+
+def parse_disaster(value: str) -> DisasterType:
+    key = value.lower().strip()
+    if key not in DISASTER_TYPES:
+        raise InvalidDisasterError(
+            f"Unsupported disaster type '{value}'. Use flood, cyclone, or earthquake.",
+            {"supported": list(DISASTER_TYPES)},
+        )
+    return DISASTER_TYPES[key]
+
+
+def _load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class CrisisService:
+    def __init__(self, data_dir: Path | None = None):
+        self.data_dir = data_dir or settings.DATA_DIR
+        self._base_zones = _load_json(self.data_dir / "zones.json")
+        self._base_roads = _load_json(self.data_dir / "roads.json")
+        self._base_hospitals = _load_json(self.data_dir / "hospitals.json")
+        self._base_shelters = _load_json(self.data_dir / "shelters.json")
+        self._base_resources = _load_json(self.data_dir / "resources.json")
+        self._incidents = _load_json(self.data_dir / "incidents.json")
+        self._overlays = _load_json(self.data_dir / "disaster_overlays.json")
+        self.worlds: dict[DisasterType, CrisisWorld] = {}
+        self.reset()
+
+    def reset(self) -> None:
+        self.worlds = {
+            DisasterType.FLOOD: self._build_world(DisasterType.FLOOD),
+            DisasterType.CYCLONE: self._build_world(DisasterType.CYCLONE),
+            DisasterType.EARTHQUAKE: self._build_world(DisasterType.EARTHQUAKE),
+        }
+        for world in self.worlds.values():
+            apply_risk_to_world(world)
+        logger.info("Loaded crisis worlds for flood, cyclone, and earthquake")
+
+    def _build_world(self, disaster: DisasterType) -> CrisisWorld:
+        overlay = deepcopy(self._overlays[disaster.value])
+        crisis = Crisis.model_validate({k: overlay[k] for k in [
+            "id", "name", "disaster_type", "status", "start_time",
+            "current_time", "severity", "description", "disaster_parameters",
+        ]})
+        zones = {
+            item["id"]: Zone.model_validate({**item, "parameters": {}})
+            for item in deepcopy(self._base_zones)
+        }
+        for zone_id, params in overlay.get("zone_overrides", {}).items():
+            if zone_id in zones:
+                zones[zone_id].parameters = params
+        roads = {item["id"]: Road.model_validate(item) for item in deepcopy(self._base_roads)}
+        for road_id, values in overlay.get("road_overrides", {}).items():
+            if road_id in roads:
+                roads[road_id] = roads[road_id].model_copy(update=values)
+        hospitals = {item["id"]: Hospital.model_validate(item) for item in deepcopy(self._base_hospitals)}
+        for hid, values in overlay.get("hospital_overrides", {}).items():
+            if hid in hospitals:
+                hospitals[hid] = hospitals[hid].model_copy(update=values)
+        shelters = {item["id"]: Shelter.model_validate(item) for item in deepcopy(self._base_shelters)}
+        for sid, values in overlay.get("shelter_overrides", {}).items():
+            if sid in shelters:
+                shelters[sid] = shelters[sid].model_copy(update=values)
+        resources = {item["id"]: Resource.model_validate(item) for item in deepcopy(self._base_resources)}
+        for rid, values in overlay.get("resource_overrides", {}).items():
+            if rid in resources:
+                resources[rid] = resources[rid].model_copy(update=values)
+        incidents = [
+            Incident.model_validate(item) for item in deepcopy(self._incidents.get(disaster.value, []))
+        ]
+        return CrisisWorld(
+            crisis=crisis,
+            zones=zones,
+            roads=roads,
+            hospitals=hospitals,
+            shelters=shelters,
+            resources=resources,
+            incidents=incidents,
+        )
+
+    def get_world(self, disaster: str | DisasterType) -> CrisisWorld:
+        dtype = disaster if isinstance(disaster, DisasterType) else parse_disaster(disaster)
+        return self.worlds[dtype]
+
+    def clone_world(self, disaster: str | DisasterType) -> CrisisWorld:
+        return self.get_world(disaster).clone()
+
+    def list_crises(self) -> list[Crisis]:
+        return [world.crisis for world in self.worlds.values()]
+
+    def get_crisis_state(self, disaster: str | DisasterType | None = None) -> dict[str, Any]:
+        if disaster is None:
+            return {
+                "crises": [c.model_dump(mode="json") for c in self.list_crises()],
+                "active": [dtype.value for dtype in self.worlds],
+            }
+        world = self.get_world(disaster)
+        return world.snapshot()
+
+    def get_zone_status(self, disaster: str, zone_id: str) -> Zone:
+        world = self.get_world(disaster)
+        if zone_id not in world.zones:
+            raise NotFoundError(f"Unknown zone '{zone_id}'", {"id": zone_id})
+        return world.zones[zone_id]
+
+    def get_road_status(self, disaster: str, road_id: str) -> Road:
+        world = self.get_world(disaster)
+        if road_id not in world.roads:
+            raise NotFoundError(f"Unknown road '{road_id}'", {"id": road_id})
+        return world.roads[road_id]
+
+    def get_hospital_capacity(self, disaster: str, hospital_id: str) -> Hospital:
+        world = self.get_world(disaster)
+        if hospital_id not in world.hospitals:
+            raise NotFoundError(f"Unknown hospital '{hospital_id}'", {"id": hospital_id})
+        return world.hospitals[hospital_id]
+
+    def get_shelter_capacity(self, disaster: str, shelter_id: str) -> Shelter:
+        world = self.get_world(disaster)
+        if shelter_id not in world.shelters:
+            raise NotFoundError(f"Unknown shelter '{shelter_id}'", {"id": shelter_id})
+        return world.shelters[shelter_id]
+
+    def get_available_resources(self, disaster: str) -> list[Resource]:
+        world = self.get_world(disaster)
+        return [r for r in world.resources.values() if r.available_quantity > 0]
+
+    def get_incidents(self, disaster: str) -> list[Incident]:
+        return list(self.get_world(disaster).incidents)
+
+    def apply_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        event_type = (payload.get("type") or "").strip()
+        disaster = payload.get("disaster_type") or payload.get("crisis_id", "")
+        if str(disaster).startswith("crisis_"):
+            disaster = str(disaster).replace("crisis_", "")
+        world = self.get_world(str(disaster) if disaster else payload.get("disaster", "flood"))
+        target_id = payload.get("target_id")
+        logger.info("Applying event %s to %s", event_type, world.crisis.disaster_type.value)
+
+        handlers = {
+            "sensor_reading": self._event_sensor,
+            "new_incident": self._event_incident,
+            "road_closure": lambda w, p: self._set_road(w, p, RoadStatus.BLOCKED),
+            "road_reopening": lambda w, p: self._set_road(w, p, RoadStatus.OPEN),
+            "hospital_capacity_update": self._event_hospital,
+            "shelter_capacity_update": self._event_shelter,
+            "resource_status_update": self._event_resource,
+            "water_level_change": self._event_water,
+            "rainfall_change": self._event_rain,
+            "cyclone_wind_change": self._event_wind,
+            "earthquake_intensity_update": self._event_quake,
+        }
+        if event_type not in handlers:
+            raise InvalidEventError(
+                f"Unsupported event type '{event_type}'",
+                {"supported": sorted(handlers)},
+            )
+        result = handlers[event_type](world, payload)
+        apply_risk_to_world(world)
+        return {
+            "accepted": True,
+            "event_type": event_type,
+            "disaster_type": world.crisis.disaster_type.value,
+            "target_id": target_id,
+            "result": result,
+        }
+
+    def _event_sensor(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        zone_id = payload.get("target_id") or payload.get("zone_id")
+        if zone_id not in world.zones:
+            raise InvalidEventError("sensor reading requires a valid zone_id")
+        readings = payload.get("readings") or payload.get("data") or {}
+        world.zones[zone_id].parameters.update(readings)
+        return {"zone_id": zone_id, "parameters": world.zones[zone_id].parameters}
+
+    def _event_incident(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        data = payload.get("incident") or payload
+        incident = Incident(
+            id=data.get("id") or f"inc_{uuid4().hex[:8]}",
+            crisis_id=world.crisis.id,
+            type=data.get("incident_type") or data.get("type") or "incident",
+            description=data.get("description") or "New incident reported",
+            latitude=float(data.get("latitude", world.crisis.latitude)),
+            longitude=float(data.get("longitude", world.crisis.longitude)),
+            severity=float(data.get("severity", 5)),
+            timestamp=datetime.fromisoformat(str(data["timestamp"]).replace("Z", "+00:00"))
+            if data.get("timestamp")
+            else datetime.fromisoformat(world.crisis.current_time.isoformat()),
+            zone_id=data.get("zone_id") or next(iter(world.zones)),
+            status=IncidentStatus(data.get("status", "active")),
+            source=data.get("source", "operator"),
+            confidence=float(data.get("confidence", 0.7)),
+        )
+        if incident.zone_id not in world.zones:
+            raise InvalidEventError("incident zone_id is invalid")
+        world.incidents.append(incident)
+        return incident.model_dump(mode="json")
+
+    def _set_road(self, world: CrisisWorld, payload: dict[str, Any], status: RoadStatus) -> dict[str, Any]:
+        road_id = payload.get("target_id") or payload.get("road_id")
+        if road_id not in world.roads:
+            raise InvalidEventError("valid road_id is required")
+        world.roads[road_id].status = status
+        if status == RoadStatus.OPEN:
+            world.roads[road_id].risk_score = min(world.roads[road_id].risk_score, 30)
+        if status == RoadStatus.BLOCKED:
+            world.roads[road_id].risk_score = max(world.roads[road_id].risk_score, 85)
+        return world.roads[road_id].model_dump(mode="json")
+
+    def _event_hospital(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        hid = payload.get("target_id") or payload.get("hospital_id")
+        if hid not in world.hospitals:
+            raise InvalidEventError("valid hospital_id is required")
+        hospital = world.hospitals[hid]
+        if "available_beds" in payload:
+            beds = int(payload["available_beds"])
+            if beds < 0:
+                raise InvalidEventError("available_beds cannot be negative")
+            hospital.available_beds = min(hospital.total_beds, beds)
+        if "delta_beds" in payload:
+            hospital.available_beds = max(0, min(hospital.total_beds, hospital.available_beds + int(payload["delta_beds"])))
+        if hospital.available_beds == 0:
+            hospital.status = HospitalStatus.LIMITED
+        return hospital.model_dump(mode="json")
+
+    def _event_shelter(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        sid = payload.get("target_id") or payload.get("shelter_id")
+        if sid not in world.shelters:
+            raise InvalidEventError("valid shelter_id is required")
+        shelter = world.shelters[sid]
+        if "current_occupancy" in payload:
+            occ = int(payload["current_occupancy"])
+            if occ < 0:
+                raise InvalidEventError("occupancy cannot be negative")
+            shelter.current_occupancy = min(shelter.capacity, occ)
+        if payload.get("full"):
+            shelter.current_occupancy = shelter.capacity
+            shelter.status = ShelterStatus.FULL
+        return shelter.model_dump(mode="json")
+
+    def _event_resource(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        rid = payload.get("target_id") or payload.get("resource_id")
+        if rid not in world.resources:
+            raise InvalidEventError("valid resource_id is required")
+        resource = world.resources[rid]
+        if "available_quantity" in payload:
+            qty = int(payload["available_quantity"])
+            if qty < 0:
+                raise InvalidEventError("available_quantity cannot be negative")
+            resource.available_quantity = min(resource.quantity, qty)
+        if "delta" in payload:
+            resource.available_quantity = max(0, min(resource.quantity, resource.available_quantity + int(payload["delta"])))
+        if payload.get("status"):
+            resource.status = ResourceStatus(payload["status"])
+        return resource.model_dump(mode="json")
+
+    def _event_water(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        params = world.crisis.disaster_parameters
+        if "value" in payload:
+            params["river_water_level_m"] = float(payload["value"])
+        if "delta" in payload:
+            params["river_water_level_m"] = float(params.get("river_water_level_m", 0)) + float(payload["delta"])
+            params["water_level_change_m"] = float(payload["delta"])
+        zone_id = payload.get("target_id") or payload.get("zone_id")
+        if zone_id in world.zones:
+            if "value" in payload:
+                world.zones[zone_id].parameters["water_level_m"] = float(payload["value"])
+            if "delta" in payload:
+                current = float(world.zones[zone_id].parameters.get("water_level_m", 0))
+                world.zones[zone_id].parameters["water_level_m"] = max(0, current + float(payload["delta"]))
+                world.zones[zone_id].parameters["water_level_change_m"] = float(payload["delta"])
+        return {"disaster_parameters": params}
+
+    def _event_rain(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        params = world.crisis.disaster_parameters
+        if "value" in payload:
+            params["rainfall_mm"] = float(payload["value"])
+        if "delta_percent" in payload:
+            params["rainfall_mm"] = float(params.get("rainfall_mm", 0)) * (1 + float(payload["delta_percent"]) / 100)
+        if "delta" in payload:
+            params["rainfall_mm"] = float(params.get("rainfall_mm", 0)) + float(payload["delta"])
+        for zone in world.zones.values():
+            rain = float(zone.parameters.get("rainfall_mm", params.get("rainfall_mm", 0)))
+            if "delta_percent" in payload:
+                zone.parameters["rainfall_mm"] = rain * (1 + float(payload["delta_percent"]) / 100)
+            elif "delta" in payload:
+                zone.parameters["rainfall_mm"] = rain + float(payload["delta"])
+        return {"rainfall_mm": params.get("rainfall_mm")}
+
+    def _event_wind(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        params = world.crisis.disaster_parameters
+        if "value" in payload:
+            params["wind_speed_kmh"] = float(payload["value"])
+        if "delta_percent" in payload:
+            params["wind_speed_kmh"] = float(params.get("wind_speed_kmh", 0)) * (1 + float(payload["delta_percent"]) / 100)
+            params["intensity_index"] = min(1.0, float(params.get("intensity_index", 0.5)) * (1 + float(payload["delta_percent"]) / 200))
+        for zone in world.zones.values():
+            wind = float(zone.parameters.get("wind_speed_kmh", params.get("wind_speed_kmh", 0)))
+            if "delta_percent" in payload:
+                zone.parameters["wind_speed_kmh"] = wind * (1 + float(payload["delta_percent"]) / 100)
+            elif "value" in payload:
+                zone.parameters["wind_speed_kmh"] = float(payload["value"])
+        return {"wind_speed_kmh": params.get("wind_speed_kmh")}
+
+    def _event_quake(self, world: CrisisWorld, payload: dict[str, Any]) -> dict[str, Any]:
+        params = world.crisis.disaster_parameters
+        if "magnitude" in payload:
+            params["magnitude"] = float(payload["magnitude"])
+        if "delta_magnitude" in payload:
+            params["magnitude"] = float(params.get("magnitude", 0)) + float(payload["delta_magnitude"])
+        if "seismic_intensity" in payload and payload.get("target_id") in world.zones:
+            world.zones[payload["target_id"]].parameters["seismic_intensity"] = float(payload["seismic_intensity"])
+        return {"magnitude": params.get("magnitude")}
+
+
+crisis_service = CrisisService()
+
+===== app/services/__init__.py =====
+from app.services.alert_service import generate_alerts
+from app.services.crisis_service import CrisisService, crisis_service, parse_disaster
+from app.services.llm_service import LLMService, llm_service
+from app.services.scenario_service import ScenarioService
+
+scenario_service = ScenarioService(crisis_service)
+
+__all__ = [
+    "CrisisService",
+    "LLMService",
+    "ScenarioService",
+    "crisis_service",
+    "generate_alerts",
+    "llm_service",
+    "parse_disaster",
+    "scenario_service",
+]
+
+===== app/services/scenario_service.py =====
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from app.exceptions import InvalidScenarioError
+from app.logging_config import logger
+from app.models.location import RoadStatus, ShelterStatus
+from app.models.response import Scenario, ScenarioChange
+from app.models.resource import ResourceType
+from app.services.crisis_service import CrisisService, parse_disaster
+from app.simulation.engine import simulate_world
+from app.simulation.resources import allocate_resources
+from app.simulation.risk import apply_risk_to_world
+from app.simulation.routes import find_safe_route
+from app.world import CrisisWorld
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ScenarioService:
+    def __init__(self, crisis_service: CrisisService):
+        self.crisis_service = crisis_service
+        self.history: list[Scenario] = []
+
+    def list_scenarios(self, disaster: str | None = None) -> list[Scenario]:
+        if not disaster:
+            return list(self.history)
+        dtype = parse_disaster(disaster)
+        crisis_id = f"crisis_{dtype.value}"
+        return [s for s in self.history if s.crisis_id == crisis_id]
+
+    def apply_changes(self, world: CrisisWorld, changes: list[ScenarioChange]) -> CrisisWorld:
+        clone = world.clone()
+        for change in changes:
+            self._apply_change(clone, change)
+        apply_risk_to_world(clone)
+        return clone
+
+    def _apply_change(self, world: CrisisWorld, change: ScenarioChange) -> None:
+        ctype = change.type
+        target = change.target_id
+        if ctype == "road_status_change":
+            if not target or target not in world.roads:
+                raise InvalidScenarioError(f"Unknown road '{target}'")
+            if not change.new_status:
+                raise InvalidScenarioError("road_status_change requires new_status")
+            world.roads[target].status = RoadStatus(change.new_status)
+            if world.roads[target].status == RoadStatus.BLOCKED:
+                world.roads[target].risk_score = max(world.roads[target].risk_score, 90)
+        elif ctype == "shelter_status_change":
+            if not target or target not in world.shelters:
+                raise InvalidScenarioError(f"Unknown shelter '{target}'")
+            shelter = world.shelters[target]
+            occupancy = shelter.current_occupancy
+            if change.new_status == "full" or change.field == "full":
+                occupancy = shelter.capacity
+            if change.value is not None and change.field == "current_occupancy":
+                occupancy = int(change.value)
+            world.shelters[target] = shelter.model_copy(update={"current_occupancy": occupancy})
+        elif ctype == "hospital_capacity_change":
+            if not target or target not in world.hospitals:
+                raise InvalidScenarioError(f"Unknown hospital '{target}'")
+            hospital = world.hospitals[target]
+            if change.delta is not None:
+                hospital.available_beds = max(0, hospital.available_beds + int(change.delta))
+            if change.value is not None:
+                hospital.available_beds = max(0, min(hospital.total_beds, int(change.value)))
+            hospital.available_beds = min(hospital.available_beds, hospital.total_beds)
+        elif ctype == "rainfall_change":
+            self._scale_param(world, "rainfall_mm", change)
+        elif ctype == "wind_speed_change":
+            self._scale_param(world, "wind_speed_kmh", change)
+            if change.delta_percent:
+                params = world.crisis.disaster_parameters
+                params["intensity_index"] = min(
+                    1.0,
+                    float(params.get("intensity_index", 0.5)) * (1 + change.delta_percent / 200),
+                )
+        elif ctype == "water_level_change":
+            self._scale_param(world, "water_level_m", change, zone_only=True)
+            if change.delta is not None:
+                world.crisis.disaster_parameters["river_water_level_m"] = float(
+                    world.crisis.disaster_parameters.get("river_water_level_m", 0)
+                ) + change.delta
+        elif ctype == "magnitude_change":
+            params = world.crisis.disaster_parameters
+            if change.delta is not None:
+                params["magnitude"] = float(params.get("magnitude", 0)) + change.delta
+            if change.value is not None:
+                params["magnitude"] = float(change.value)
+            for zone in world.zones.values():
+                current = float(zone.parameters.get("seismic_intensity", 0))
+                zone.parameters["seismic_intensity"] = current + (change.delta or 0) * 0.6
+        elif ctype == "resource_availability_change":
+            self._change_resources(world, change)
+        elif ctype == "population_change":
+            if not target or target not in world.zones:
+                raise InvalidScenarioError(f"Unknown zone '{target}'")
+            zone = world.zones[target]
+            if change.delta_percent is not None:
+                zone.population = int(zone.population * (1 + change.delta_percent / 100))
+            if change.delta is not None:
+                zone.population = max(0, zone.population + int(change.delta))
+            if change.value is not None:
+                zone.population = max(0, int(change.value))
+        elif ctype == "parameter_change" and target in world.zones and change.field:
+            value = change.value
+            if change.delta_percent is not None:
+                current = float(world.zones[target].parameters.get(change.field, 0))
+                value = current * (1 + change.delta_percent / 100)
+            world.zones[target].parameters[change.field] = value
+        else:
+            raise InvalidScenarioError(f"Unsupported scenario change type '{ctype}'")
+
+    def _scale_param(self, world: CrisisWorld, field: str, change: ScenarioChange, zone_only: bool = False) -> None:
+        targets = [world.zones[change.target_id]] if change.target_id and change.target_id in world.zones else list(world.zones.values())
+        for zone in targets:
+            current = float(zone.parameters.get(field, 0))
+            if change.delta_percent is not None:
+                zone.parameters[field] = current * (1 + change.delta_percent / 100)
+            elif change.delta is not None:
+                zone.parameters[field] = max(0, current + change.delta)
+            elif change.value is not None:
+                zone.parameters[field] = float(change.value)
+        if not zone_only and field == "rainfall_mm":
+            params = world.crisis.disaster_parameters
+            current = float(params.get("rainfall_mm", 0))
+            if change.delta_percent is not None:
+                params["rainfall_mm"] = current * (1 + change.delta_percent / 100)
+            elif change.value is not None:
+                params["rainfall_mm"] = float(change.value)
+        if not zone_only and field == "wind_speed_kmh":
+            params = world.crisis.disaster_parameters
+            current = float(params.get("wind_speed_kmh", 0))
+            if change.delta_percent is not None:
+                params["wind_speed_kmh"] = current * (1 + change.delta_percent / 100)
+            elif change.value is not None:
+                params["wind_speed_kmh"] = float(change.value)
+
+    def _change_resources(self, world: CrisisWorld, change: ScenarioChange) -> None:
+        matches = []
+        if change.target_id and change.target_id in world.resources:
+            matches = [world.resources[change.target_id]]
+        elif change.field:
+            try:
+                rtype = ResourceType(change.field)
+            except ValueError as exc:
+                raise InvalidScenarioError(f"Unknown resource type '{change.field}'") from exc
+            matches = [r for r in world.resources.values() if r.type == rtype]
+        if not matches:
+            raise InvalidScenarioError("resource_availability_change needs target_id or resource type")
+        remaining = int(change.delta or change.value or 0)
+        # negative delta means units become unavailable
+        if change.delta is not None and change.delta < 0:
+            to_remove = abs(int(change.delta))
+            for res in matches:
+                take = min(to_remove, res.available_quantity)
+                res.available_quantity -= take
+                to_remove -= take
+                if to_remove <= 0:
+                    break
+        elif change.value is not None:
+            for res in matches:
+                res.available_quantity = max(0, min(res.quantity, int(change.value)))
+        else:
+            for res in matches:
+                res.available_quantity = max(0, min(res.quantity, res.available_quantity + remaining))
+
+    def run_scenario(self, disaster: str, description: str, changes: list[ScenarioChange]) -> dict[str, Any]:
+        world = self.crisis_service.get_world(disaster)
+        before_world = world.clone()
+        apply_risk_to_world(before_world)
+        before_sim = simulate_world(before_world.clone())
+        after = self.apply_changes(world, changes)
+        after_sim = simulate_world(after.clone())
+        before_risk = {z.id: z.risk_score for z in before_world.zones.values()}
+        changed_risk = []
+        affected_zones = []
+        for zone in after.zones.values():
+            delta = zone.risk_score - before_risk.get(zone.id, zone.risk_score)
+            if abs(delta) >= 0.5:
+                changed_risk.append(
+                    {
+                        "zone_id": zone.id,
+                        "zone_name": zone.name,
+                        "before": round(before_risk[zone.id], 2),
+                        "after": round(zone.risk_score, 2),
+                        "delta": round(delta, 2),
+                    }
+                )
+                affected_zones.append(zone.id)
+
+        changed_routes = []
+        for origin in list(world.zones)[:4]:
+            dest = list(world.shelters.values())[0].zone_id
+            b = find_safe_route(before_world, origin, dest)
+            a = find_safe_route(after, origin, dest)
+            if b.roads_used != a.roads_used or b.feasible != a.feasible:
+                changed_routes.append(
+                    {
+                        "origin": origin,
+                        "destination": dest,
+                        "before": b.model_dump(mode="json"),
+                        "after": a.model_dump(mode="json"),
+                    }
+                )
+
+        before_alloc = allocate_resources(before_world.clone())
+        after_alloc = after_sim["allocation"]
+        before_evac = before_sim["evacuation"]
+        after_evac = after_sim["evacuation"]
+
+        scenario = Scenario(
+            id=f"scn_{uuid4().hex[:8]}",
+            crisis_id=world.crisis.id,
+            description=description,
+            changes=changes,
+            created_at=_now(),
+            resulting_state={
+                "average_risk": after_sim["average_risk"],
+                "overall_score": after_sim["overall_score"],
+            },
+            simulation_result=after_evac.model_dump(mode="json"),
+        )
+        self.history.append(scenario)
+        logger.info("Ran what-if scenario %s on %s", scenario.id, world.crisis.disaster_type.value)
+        return {
+            "scenario": scenario,
+            "before_world": before_world,
+            "after_world": after,
+            "before_sim": before_sim,
+            "after_sim": after_sim,
+            "changed_risk": changed_risk,
+            "affected_zones": affected_zones,
+            "changed_routes": changed_routes,
+            "changed_resource_allocation": {
+                "before_score": before_alloc.allocation_score,
+                "after_score": after_alloc.allocation_score,
+                "before_unmet": before_alloc.unmet_demand,
+                "after_unmet": after_alloc.unmet_demand,
+            },
+            "changed_evacuation": {
+                "before": before_evac.model_dump(mode="json"),
+                "after": after_evac.model_dump(mode="json"),
+            },
+        }
+
+    def parse_natural_language(self, text: str, disaster: str) -> list[ScenarioChange]:
+        world = self.crisis_service.get_world(disaster)
+        raw = text.lower()
+        changes: list[ScenarioChange] = []
+
+        road_match = re.search(r"road\s*(\d+)", raw)
+        if road_match and any(word in raw for word in ["block", "unavailable", "closed", "close"]):
+            rid = f"road_{int(road_match.group(1)):02d}"
+            if rid not in world.roads:
+                rid = f"road_{road_match.group(1)}"
+            changes.append(
+                ScenarioChange(
+                    type="road_status_change",
+                    target_id=rid if rid in world.roads else f"road_{int(road_match.group(1)):02d}",
+                    new_status="blocked",
+                    description=f"Block {rid}",
+                )
+            )
+
+        if "main shelter" in raw or "north hills stadium" in raw:
+            if any(word in raw for word in ["full", "fills", "capacity"]):
+                changes.append(
+                    ScenarioChange(
+                        type="shelter_status_change",
+                        target_id="s02",
+                        new_status="full",
+                        description="Main shelter becomes full",
+                    )
+                )
+
+        rain = re.search(r"rainfall.*?(increase[s]?|up|by)\s+(\d+)\s*%", raw) or re.search(
+            r"rainfall increases by\s+(\d+)\s*%", raw
+        )
+        if "rainfall" in raw and re.search(r"(\d+)\s*%", raw):
+            pct = float(re.search(r"(\d+)\s*%", raw).group(1))
+            if any(w in raw for w in ["increase", "increases", "up"]):
+                changes.append(ScenarioChange(type="rainfall_change", delta_percent=pct, description=f"Rainfall +{pct}%"))
+            elif any(w in raw for w in ["decrease", "decreases", "down"]):
+                changes.append(ScenarioChange(type="rainfall_change", delta_percent=-pct, description=f"Rainfall {pct}%"))
+
+        if "wind" in raw and re.search(r"(\d+)\s*%", raw):
+            pct = float(re.search(r"(\d+)\s*%", raw).group(1))
+            sign = -1 if any(w in raw for w in ["decrease", "decreases"]) else 1
+            changes.append(ScenarioChange(type="wind_speed_change", delta_percent=sign * pct, description=f"Wind {sign*pct}%"))
+
+        mag = re.search(r"magnitude.*?(\d+(\.\d+)?)", raw)
+        if "magnitude" in raw:
+            if "higher" in raw or "increase" in raw:
+                delta = float(mag.group(1)) if mag else 0.5
+                if delta > 2:
+                    delta = 0.5
+                changes.append(ScenarioChange(type="magnitude_change", delta=delta, description=f"Magnitude +{delta}"))
+
+        beds = re.search(r"(lose[s]?|lost|loses)\s+(\d+)\s+beds", raw) or re.search(r"(\d+)\s+beds", raw)
+        if "hospital" in raw and beds:
+            qty = int(beds.group(2) if beds.lastindex and beds.lastindex >= 2 else beds.group(1))
+            target = "h01"
+            if "coastal" in raw:
+                target = "h02"
+            changes.append(
+                ScenarioChange(
+                    type="hospital_capacity_change",
+                    target_id=target,
+                    delta=-qty,
+                    description=f"Hospital {target} loses {qty} beds",
+                )
+            )
+
+        amb = re.search(r"(\d+)\s+ambulance", raw)
+        if amb and any(w in raw for w in ["unavailable", "offline", "lose", "lost"]):
+            changes.append(
+                ScenarioChange(
+                    type="resource_availability_change",
+                    field="ambulance",
+                    delta=-int(amb.group(1)),
+                    description=f"{amb.group(1)} ambulances unavailable",
+                )
+            )
+
+        zone_match = re.search(r"zone\s*(\d+)", raw)
+        if zone_match and "people" in raw and re.search(r"(\d+)\s*%", raw):
+            zid = f"z{int(zone_match.group(1)):02d}"
+            pct = float(re.search(r"(\d+)\s*%", raw).group(1))
+            sign = 1 if any(w in raw for w in ["more", "increase"]) else -1
+            changes.append(
+                ScenarioChange(
+                    type="population_change",
+                    target_id=zid,
+                    delta_percent=sign * pct,
+                    description=f"{zid} population {sign*pct}%",
+                )
+            )
+
+        if not changes:
+            raise InvalidScenarioError(
+                "Could not parse a structured scenario from the request. Try mentioning a road, shelter, rainfall, wind, magnitude, hospital, ambulance, or zone."
+            )
+        return changes
+
+===== app/services/llm_service.py =====
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+from app.config import settings
+from app.exceptions import LLMError
+from app.logging_config import logger
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class LLMProvider:
+    name = "base"
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    def generate(self, prompt: str, system: str | None = None) -> str:
+        raise LLMError("LLM provider is not configured")
+
+
+class GroqProvider(LLMProvider):
+    name = "groq"
+
+    def __init__(self) -> None:
+        self.api_key = settings.GROQ_API_KEY
+        self.model = settings.GROQ_MODEL
+        self.timeout = settings.LLM_TIMEOUT_SECONDS
+        self._client = None
+        if self.api_key:
+            try:
+                from groq import Groq
+
+                self._client = Groq(api_key=self.api_key, timeout=self.timeout)
+            except Exception as exc:  # pragma: no cover - import/runtime guard
+                logger.error("Failed to initialize Groq client: %s", exc)
+                self._client = None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.api_key) and self._client is not None
+
+    def generate(self, prompt: str, system: str | None = None) -> str:
+        if not self.available:
+            raise LLMError("GROQ_API_KEY is missing or Groq client failed to initialize")
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        try:
+            logger.info("Calling Groq model %s", self.model)
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content or ""
+            return content
+        except Exception as exc:
+            logger.error("Groq API failure: %s", exc)
+            raise LLMError("LLM request failed") from exc
+
+
+class LLMService:
+    def __init__(self, provider: LLMProvider | None = None):
+        if provider is not None:
+            self.provider = provider
+        elif settings.LLM_PROVIDER.lower() == "groq":
+            self.provider = GroqProvider()
+        else:
+            self.provider = LLMProvider()
+
+    @property
+    def available(self) -> bool:
+        return self.provider.available
+
+    def generate(self, prompt: str, system: str | None = None) -> str:
+        return self.provider.generate(prompt, system=system)
+
+    def generate_structured(self, prompt: str, schema: type[T], system: str | None = None) -> T:
+        raw = self.generate(prompt, system=system)
+        payload = extract_json(raw)
+        try:
+            return schema.model_validate(payload)
+        except ValidationError as exc:
+            logger.error("Malformed LLM JSON for %s: %s", schema.__name__, exc)
+            raise LLMError("LLM returned malformed structured output") from exc
+
+
+def extract_json(text: str) -> Any:
+    text = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise LLMError("LLM response was not valid JSON") from exc
+
+
+llm_service = LLMService()
+
+===== app/services/alert_service.py =====
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from app.models.location import Alert, RiskLevel, RoadStatus, ShelterStatus
+from app.models.resource import ResourceStatus, ResourceType
+from app.world import CrisisWorld
+
+
+def generate_alerts(world: CrisisWorld) -> list[Alert]:
+    alerts: list[Alert] = []
+    now = datetime.now(timezone.utc).isoformat()
+    disaster = world.crisis.disaster_type.value
+    params = world.crisis.disaster_parameters
+
+    for zone in world.zones.values():
+        if zone.risk_level == RiskLevel.CRITICAL:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.CRITICAL,
+                    type="critical_zone_risk",
+                    message=f"{zone.name} is at critical risk ({zone.risk_score:.1f}/100).",
+                    timestamp=now,
+                    affected_zone=zone.id,
+                    evidence=[f"risk_score={zone.risk_score}", f"population={zone.population}"],
+                    disaster_type=disaster,
+                )
+            )
+
+    if disaster == "flood":
+        if float(params.get("water_level_change_m", 0)) >= 0.4:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.HIGH,
+                    type="rapidly_rising_water",
+                    message=f"River water rising quickly ({params.get('water_level_change_m')} m change).",
+                    timestamp=now,
+                    evidence=[f"river_water_level_m={params.get('river_water_level_m')}"],
+                    disaster_type=disaster,
+                )
+            )
+        for zone in world.zones.values():
+            if float(zone.parameters.get("water_level_change_m", 0)) >= 0.5:
+                alerts.append(
+                    Alert(
+                        id=f"al_{uuid4().hex[:8]}",
+                        severity=RiskLevel.HIGH,
+                        type="rapidly_rising_water",
+                        message=f"Water level in {zone.name} rose {zone.parameters.get('water_level_change_m')} m.",
+                        timestamp=now,
+                        affected_zone=zone.id,
+                        evidence=[f"water_level_m={zone.parameters.get('water_level_m')}"],
+                        disaster_type=disaster,
+                    )
+                )
+
+    if disaster == "cyclone" and float(params.get("wind_speed_kmh", 0)) >= 140:
+        alerts.append(
+            Alert(
+                id=f"al_{uuid4().hex[:8]}",
+                severity=RiskLevel.CRITICAL,
+                type="cyclone_intensification",
+                message=f"Cyclone winds at {params.get('wind_speed_kmh')} km/h with intensity {params.get('intensity')}.",
+                timestamp=now,
+                evidence=[f"intensity_index={params.get('intensity_index')}"],
+                disaster_type=disaster,
+            )
+        )
+
+    if disaster == "earthquake":
+        for zone in world.zones.values():
+            if float(zone.parameters.get("seismic_intensity", 0)) >= 6.5:
+                alerts.append(
+                    Alert(
+                        id=f"al_{uuid4().hex[:8]}",
+                        severity=RiskLevel.CRITICAL,
+                        type="earthquake_high_intensity_zone",
+                        message=f"{zone.name} seismic intensity {zone.parameters.get('seismic_intensity')}.",
+                        timestamp=now,
+                        affected_zone=zone.id,
+                        evidence=[f"magnitude={params.get('magnitude')}"],
+                        disaster_type=disaster,
+                    )
+                )
+
+    for road in world.roads.values():
+        if road.status == RoadStatus.BLOCKED:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.HIGH,
+                    type="blocked_evacuation_route",
+                    message=f"{road.name} is blocked between {road.from_zone} and {road.to_zone}.",
+                    timestamp=now,
+                    evidence=[f"road_id={road.id}", f"status={road.status.value}"],
+                    disaster_type=disaster,
+                )
+            )
+
+    for shelter in world.shelters.values():
+        util = shelter.current_occupancy / max(shelter.capacity, 1)
+        if util >= 0.8 or shelter.status == ShelterStatus.FULL:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.HIGH if util >= 0.95 else RiskLevel.MODERATE,
+                    type="shelter_near_capacity",
+                    message=f"{shelter.name} is at {util:.0%} occupancy.",
+                    timestamp=now,
+                    affected_zone=shelter.zone_id,
+                    evidence=[f"occupancy={shelter.current_occupancy}/{shelter.capacity}"],
+                    disaster_type=disaster,
+                )
+            )
+
+    for hospital in world.hospitals.values():
+        remaining = hospital.available_beds / max(hospital.total_beds, 1)
+        if remaining <= 0.2:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.HIGH,
+                    type="hospital_near_capacity",
+                    message=f"{hospital.name} has {hospital.available_beds} of {hospital.total_beds} beds free.",
+                    timestamp=now,
+                    affected_zone=hospital.zone_id,
+                    evidence=[f"available_beds={hospital.available_beds}"],
+                    disaster_type=disaster,
+                )
+            )
+
+    ambulances = [r for r in world.resources.values() if r.type == ResourceType.AMBULANCE]
+    available = sum(r.available_quantity for r in ambulances)
+    if available <= 3:
+        alerts.append(
+            Alert(
+                id=f"al_{uuid4().hex[:8]}",
+                severity=RiskLevel.HIGH,
+                type="resource_shortage",
+                message=f"Only {available} ambulances available citywide.",
+                timestamp=now,
+                evidence=[f"status={[r.status.value for r in ambulances]}"],
+                disaster_type=disaster,
+            )
+        )
+
+    for resource in world.resources.values():
+        if resource.status == ResourceStatus.UNAVAILABLE:
+            alerts.append(
+                Alert(
+                    id=f"al_{uuid4().hex[:8]}",
+                    severity=RiskLevel.MODERATE,
+                    type="resource_shortage",
+                    message=f"{resource.name} is unavailable.",
+                    timestamp=now,
+                    affected_zone=resource.zone_id,
+                    evidence=[f"resource_id={resource.id}"],
+                    disaster_type=disaster,
+                )
+            )
+
+    severity_rank = {RiskLevel.CRITICAL: 0, RiskLevel.HIGH: 1, RiskLevel.MODERATE: 2, RiskLevel.LOW: 3}
+    alerts.sort(key=lambda a: severity_rank[a.severity])
+    return alerts

@@ -1,0 +1,98 @@
+[
+  {
+    "id": "z01",
+    "name": "Downtown",
+    "latitude": 13.0827,
+    "longitude": 80.2707,
+    "population": 45000,
+    "vulnerability": 0.55
+  },
+  {
+    "id": "z02",
+    "name": "Riverside",
+    "latitude": 13.0780,
+    "longitude": 80.2550,
+    "population": 32000,
+    "vulnerability": 0.78
+  },
+  {
+    "id": "z03",
+    "name": "Harbor District",
+    "latitude": 13.0700,
+    "longitude": 80.2850,
+    "population": 28000,
+    "vulnerability": 0.82
+  },
+  {
+    "id": "z04",
+    "name": "Industrial Park",
+    "latitude": 13.0950,
+    "longitude": 80.2480,
+    "population": 18000,
+    "vulnerability": 0.66
+  },
+  {
+    "id": "z05",
+    "name": "North Hills",
+    "latitude": 13.1180,
+    "longitude": 80.2620,
+    "population": 22000,
+    "vulnerability": 0.22
+  },
+  {
+    "id": "z06",
+    "name": "South Flats",
+    "latitude": 13.0550,
+    "longitude": 80.2680,
+    "population": 38000,
+    "vulnerability": 0.71
+  },
+  {
+    "id": "z07",
+    "name": "East Coast",
+    "latitude": 13.0820,
+    "longitude": 80.2980,
+    "population": 25000,
+    "vulnerability": 0.86
+  },
+  {
+    "id": "z08",
+    "name": "West Market",
+    "latitude": 13.0840,
+    "longitude": 80.2320,
+    "population": 35000,
+    "vulnerability": 0.48
+  },
+  {
+    "id": "z09",
+    "name": "University District",
+    "latitude": 13.1050,
+    "longitude": 80.2780,
+    "population": 20000,
+    "vulnerability": 0.34
+  },
+  {
+    "id": "z10",
+    "name": "Airport Corridor",
+    "latitude": 13.0480,
+    "longitude": 80.2450,
+    "population": 12000,
+    "vulnerability": 0.40
+  },
+  {
+    "id": "z11",
+    "name": "Old Town",
+    "latitude": 13.0900,
+    "longitude": 80.2620,
+    "population": 40000,
+    "vulnerability": 0.69
+  },
+  {
+    "id": "z12",
+    "name": "Greenbelt",
+    "latitude": 13.1250,
+    "longitude": 80.2450,
+    "population": 8000,
+    "vulnerability": 0.18
+  }
+]

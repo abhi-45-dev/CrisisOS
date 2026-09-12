@@ -1,0 +1,145 @@
+[
+  {
+    "id": "res_01",
+    "type": "ambulance",
+    "name": "Downtown Ambulance Unit A",
+    "quantity": 8,
+    "available_quantity": 5,
+    "latitude": 13.0821,
+    "longitude": 80.2712,
+    "zone_id": "z01",
+    "status": "limited"
+  },
+  {
+    "id": "res_02",
+    "type": "ambulance",
+    "name": "South Ambulance Unit B",
+    "quantity": 6,
+    "available_quantity": 4,
+    "latitude": 13.0564,
+    "longitude": 80.2672,
+    "zone_id": "z06",
+    "status": "limited"
+  },
+  {
+    "id": "res_03",
+    "type": "fire_truck",
+    "name": "Harbor Fire Company",
+    "quantity": 4,
+    "available_quantity": 3,
+    "latitude": 13.0712,
+    "longitude": 80.2841,
+    "zone_id": "z03",
+    "status": "limited"
+  },
+  {
+    "id": "res_04",
+    "type": "rescue_team",
+    "name": "Riverside Rescue Team",
+    "quantity": 5,
+    "available_quantity": 4,
+    "latitude": 13.0788,
+    "longitude": 80.2561,
+    "zone_id": "z02",
+    "status": "limited"
+  },
+  {
+    "id": "res_05",
+    "type": "rescue_team",
+    "name": "North Hills Rescue",
+    "quantity": 4,
+    "available_quantity": 4,
+    "latitude": 13.1174,
+    "longitude": 80.2611,
+    "zone_id": "z05",
+    "status": "available"
+  },
+  {
+    "id": "res_06",
+    "type": "police_unit",
+    "name": "Old Town Police",
+    "quantity": 10,
+    "available_quantity": 7,
+    "latitude": 13.0894,
+    "longitude": 80.2614,
+    "zone_id": "z11",
+    "status": "limited"
+  },
+  {
+    "id": "res_07",
+    "type": "helicopter",
+    "name": "Air Rescue 1",
+    "quantity": 2,
+    "available_quantity": 1,
+    "latitude": 13.0488,
+    "longitude": 80.2444,
+    "zone_id": "z10",
+    "status": "limited"
+  },
+  {
+    "id": "res_08",
+    "type": "water_pump",
+    "name": "Flood Pump Unit East",
+    "quantity": 6,
+    "available_quantity": 5,
+    "latitude": 13.0814,
+    "longitude": 80.2968,
+    "zone_id": "z07",
+    "status": "limited"
+  },
+  {
+    "id": "res_09",
+    "type": "water_pump",
+    "name": "Flood Pump Unit River",
+    "quantity": 5,
+    "available_quantity": 4,
+    "latitude": 13.0772,
+    "longitude": 80.2542,
+    "zone_id": "z02",
+    "status": "limited"
+  },
+  {
+    "id": "res_10",
+    "type": "medical_team",
+    "name": "Field Medical Team Alpha",
+    "quantity": 6,
+    "available_quantity": 5,
+    "latitude": 13.1044,
+    "longitude": 80.2772,
+    "zone_id": "z09",
+    "status": "limited"
+  },
+  {
+    "id": "res_11",
+    "type": "emergency_vehicle",
+    "name": "Rapid Response Convoy",
+    "quantity": 8,
+    "available_quantity": 6,
+    "latitude": 13.0836,
+    "longitude": 80.2330,
+    "zone_id": "z08",
+    "status": "limited"
+  },
+  {
+    "id": "res_12",
+    "type": "food_supply",
+    "name": "Greenbelt Relief Cache",
+    "quantity": 20,
+    "available_quantity": 18,
+    "latitude": 13.1246,
+    "longitude": 80.2458,
+    "zone_id": "z12",
+    "status": "available"
+  },
+  {
+    "id": "res_13",
+    "type": "ambulance",
+    "name": "Coastal Ambulance Unit C",
+    "quantity": 4,
+    "available_quantity": 3,
+    "latitude": 13.0810,
+    "longitude": 80.2972,
+    "zone_id": "z07",
+    "status": "limited"
+  }
+]

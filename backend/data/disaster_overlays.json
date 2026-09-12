@@ -1,0 +1,142 @@
+{
+  "flood": {
+    "id": "crisis_flood",
+    "name": "Harbor City Monsoon Flood",
+    "disaster_type": "flood",
+    "status": "escalating",
+    "start_time": "2026-09-11T22:00:00Z",
+    "current_time": "2026-09-12T05:00:00Z",
+    "severity": 7.8,
+    "description": "Prolonged monsoon rainfall has driven river and drainage systems above design capacity. Riverside, Harbor District, East Coast, and South Flats are taking on water. Shelter demand is rising.",
+    "disaster_parameters": {
+      "rainfall_mm": 186,
+      "rainfall_change_mm": 22,
+      "river_water_level_m": 4.4,
+      "water_level_change_m": 0.6,
+      "drainage_capacity_pct": 41,
+      "inundation_index": 0.71
+    },
+    "zone_overrides": {
+      "z01": {"rainfall_mm": 140, "water_level_m": 1.6, "water_level_change_m": 0.2, "drainage_capacity_pct": 58, "inundation_risk": 0.42},
+      "z02": {"rainfall_mm": 210, "water_level_m": 4.6, "water_level_change_m": 0.8, "drainage_capacity_pct": 28, "inundation_risk": 0.88},
+      "z03": {"rainfall_mm": 198, "water_level_m": 3.9, "water_level_change_m": 0.7, "drainage_capacity_pct": 33, "inundation_risk": 0.81},
+      "z04": {"rainfall_mm": 150, "water_level_m": 1.4, "water_level_change_m": 0.2, "drainage_capacity_pct": 55, "inundation_risk": 0.36},
+      "z05": {"rainfall_mm": 95, "water_level_m": 0.3, "water_level_change_m": 0.0, "drainage_capacity_pct": 88, "inundation_risk": 0.08},
+      "z06": {"rainfall_mm": 205, "water_level_m": 3.4, "water_level_change_m": 0.5, "drainage_capacity_pct": 30, "inundation_risk": 0.76},
+      "z07": {"rainfall_mm": 220, "water_level_m": 3.1, "water_level_change_m": 0.6, "drainage_capacity_pct": 35, "inundation_risk": 0.79},
+      "z08": {"rainfall_mm": 130, "water_level_m": 1.1, "water_level_change_m": 0.1, "drainage_capacity_pct": 62, "inundation_risk": 0.28},
+      "z09": {"rainfall_mm": 110, "water_level_m": 0.5, "water_level_change_m": 0.05, "drainage_capacity_pct": 80, "inundation_risk": 0.12},
+      "z10": {"rainfall_mm": 125, "water_level_m": 0.9, "water_level_change_m": 0.1, "drainage_capacity_pct": 70, "inundation_risk": 0.22},
+      "z11": {"rainfall_mm": 170, "water_level_m": 2.4, "water_level_change_m": 0.4, "drainage_capacity_pct": 44, "inundation_risk": 0.61},
+      "z12": {"rainfall_mm": 80, "water_level_m": 0.2, "water_level_change_m": 0.0, "drainage_capacity_pct": 92, "inundation_risk": 0.05}
+    },
+    "road_overrides": {
+      "road_01": {"status": "dangerous", "risk_score": 78},
+      "road_02": {"status": "congested", "risk_score": 64},
+      "road_12": {"status": "congested", "risk_score": 61},
+      "road_15": {"status": "dangerous", "risk_score": 74},
+      "road_19": {"status": "blocked", "risk_score": 92},
+      "road_21": {"status": "congested", "risk_score": 58}
+    },
+    "hospital_overrides": {
+      "h01": {"available_beds": 62, "status": "strained"},
+      "h04": {"available_beds": 28, "status": "strained"}
+    },
+    "shelter_overrides": {
+      "s01": {"current_occupancy": 4100}
+    }
+  },
+  "cyclone": {
+    "id": "crisis_cyclone",
+    "name": "Cyclone Nila Approach",
+    "disaster_type": "cyclone",
+    "status": "active",
+    "start_time": "2026-09-11T18:00:00Z",
+    "current_time": "2026-09-12T05:00:00Z",
+    "severity": 8.2,
+    "description": "A severe cyclonic storm is tracking toward Harbor City. Coastal and harbor zones face high wind, storm surge, and rainfall. Inland hills remain comparatively safer staging areas.",
+    "disaster_parameters": {
+      "intensity": "severe_cyclonic_storm",
+      "intensity_index": 0.78,
+      "wind_speed_kmh": 145,
+      "wind_direction": "ENE",
+      "rainfall_mm": 160,
+      "storm_radius_km": 42,
+      "affected_radius_km": 55,
+      "eye_latitude": 13.0400,
+      "eye_longitude": 80.3600
+    },
+    "zone_overrides": {
+      "z01": {"wind_speed_kmh": 110, "rainfall_mm": 120, "storm_distance_km": 18, "infrastructure_risk": 0.48, "flooding_contribution": 0.35},
+      "z02": {"wind_speed_kmh": 105, "rainfall_mm": 140, "storm_distance_km": 22, "infrastructure_risk": 0.44, "flooding_contribution": 0.52},
+      "z03": {"wind_speed_kmh": 155, "rainfall_mm": 175, "storm_distance_km": 9, "infrastructure_risk": 0.86, "flooding_contribution": 0.74},
+      "z04": {"wind_speed_kmh": 95, "rainfall_mm": 110, "storm_distance_km": 24, "infrastructure_risk": 0.57, "flooding_contribution": 0.22},
+      "z05": {"wind_speed_kmh": 80, "rainfall_mm": 90, "storm_distance_km": 28, "infrastructure_risk": 0.22, "flooding_contribution": 0.08},
+      "z06": {"wind_speed_kmh": 125, "rainfall_mm": 150, "storm_distance_km": 16, "infrastructure_risk": 0.61, "flooding_contribution": 0.48},
+      "z07": {"wind_speed_kmh": 162, "rainfall_mm": 190, "storm_distance_km": 7, "infrastructure_risk": 0.91, "flooding_contribution": 0.7},
+      "z08": {"wind_speed_kmh": 88, "rainfall_mm": 100, "storm_distance_km": 26, "infrastructure_risk": 0.33, "flooding_contribution": 0.18},
+      "z09": {"wind_speed_kmh": 100, "rainfall_mm": 115, "storm_distance_km": 20, "infrastructure_risk": 0.31, "flooding_contribution": 0.16},
+      "z10": {"wind_speed_kmh": 92, "rainfall_mm": 105, "storm_distance_km": 23, "infrastructure_risk": 0.4, "flooding_contribution": 0.2},
+      "z11": {"wind_speed_kmh": 118, "rainfall_mm": 130, "storm_distance_km": 19, "infrastructure_risk": 0.58, "flooding_contribution": 0.4},
+      "z12": {"wind_speed_kmh": 70, "rainfall_mm": 75, "storm_distance_km": 32, "infrastructure_risk": 0.14, "flooding_contribution": 0.05}
+    },
+    "road_overrides": {
+      "road_02": {"status": "dangerous", "risk_score": 82},
+      "road_19": {"status": "blocked", "risk_score": 90},
+      "road_01": {"status": "congested", "risk_score": 66},
+      "road_15": {"status": "congested", "risk_score": 60}
+    },
+    "hospital_overrides": {
+      "h02": {"available_beds": 31, "status": "strained"}
+    },
+    "shelter_overrides": {
+      "s03": {"current_occupancy": 1800}
+    }
+  },
+  "earthquake": {
+    "id": "crisis_earthquake",
+    "name": "Harbor City M6.4 Earthquake",
+    "disaster_type": "earthquake",
+    "status": "active",
+    "start_time": "2026-09-12T01:12:00Z",
+    "current_time": "2026-09-12T05:00:00Z",
+    "severity": 8.0,
+    "description": "A magnitude 6.4 earthquake with epicenter near Industrial Park has damaged roads and industrial structures. Downtown hospitals are absorbing trauma demand. Aftershocks continue.",
+    "disaster_parameters": {
+      "magnitude": 6.4,
+      "epicenter_latitude": 13.0965,
+      "epicenter_longitude": 80.2495,
+      "depth_km": 12,
+      "affected_radius_km": 18,
+      "peak_seismic_intensity": 7.2
+    },
+    "zone_overrides": {
+      "z01": {"seismic_intensity": 6.1, "building_vulnerability": 0.58, "distance_from_epicenter_km": 2.6},
+      "z02": {"seismic_intensity": 5.8, "building_vulnerability": 0.62, "distance_from_epicenter_km": 2.2},
+      "z03": {"seismic_intensity": 5.2, "building_vulnerability": 0.55, "distance_from_epicenter_km": 4.8},
+      "z04": {"seismic_intensity": 7.2, "building_vulnerability": 0.74, "distance_from_epicenter_km": 0.3},
+      "z05": {"seismic_intensity": 4.4, "building_vulnerability": 0.28, "distance_from_epicenter_km": 2.8},
+      "z06": {"seismic_intensity": 5.0, "building_vulnerability": 0.6, "distance_from_epicenter_km": 5.0},
+      "z07": {"seismic_intensity": 4.6, "building_vulnerability": 0.5, "distance_from_epicenter_km": 5.5},
+      "z08": {"seismic_intensity": 5.6, "building_vulnerability": 0.45, "distance_from_epicenter_km": 2.3},
+      "z09": {"seismic_intensity": 5.4, "building_vulnerability": 0.32, "distance_from_epicenter_km": 3.2},
+      "z10": {"seismic_intensity": 5.1, "building_vulnerability": 0.4, "distance_from_epicenter_km": 5.4},
+      "z11": {"seismic_intensity": 6.4, "building_vulnerability": 0.72, "distance_from_epicenter_km": 1.6},
+      "z12": {"seismic_intensity": 3.8, "building_vulnerability": 0.2, "distance_from_epicenter_km": 3.2}
+    },
+    "road_overrides": {
+      "road_08": {"status": "dangerous", "risk_score": 76},
+      "road_18": {"status": "blocked", "risk_score": 94},
+      "road_11": {"status": "congested", "risk_score": 58},
+      "road_07": {"status": "dangerous", "risk_score": 70}
+    },
+    "hospital_overrides": {
+      "h01": {"available_beds": 18, "status": "limited"},
+      "h05": {"available_beds": 40, "status": "strained"}
+    },
+    "resource_overrides": {
+      "res_01": {"available_quantity": 2, "status": "limited"},
+      "res_04": {"available_quantity": 3, "status": "limited"}
+    }
+  }
+}
