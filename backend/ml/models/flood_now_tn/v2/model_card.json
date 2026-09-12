@@ -1,0 +1,50 @@
+{
+  "model_name": "FloodNow TN v2",
+  "version": "2.0.0",
+  "objective": "Estimate conditional likelihood of recorded flood occurrence given antecedent meteorology and soil moisture.",
+  "algorithm": "RandomForestClassifier",
+  "held_out_metrics": {
+    "brier_score": 0.1345,
+    "pr_auc": 0.9345,
+    "roc_auc": 0.9144,
+    "f1": 0.7925,
+    "precision": 0.9545,
+    "recall": 0.6774,
+    "accuracy": 0.807,
+    "confusion_matrix": {
+      "tn": 25,
+      "fp": 1,
+      "fn": 10,
+      "tp": 21
+    },
+    "sample_count": 57,
+    "positive_count": 31,
+    "prevalence": 0.5439,
+    "confidence_intervals": {
+      "roc_auc_ci_95": [
+        0.8358,
+        0.9702
+      ],
+      "pr_auc_ci_95": [
+        0.8647,
+        0.9797
+      ],
+      "brier_ci_95": [
+        0.0855,
+        0.1911
+      ]
+    }
+  },
+  "anti_leakage_audit": {
+    "shuffled_target_roc_auc": 0.5204,
+    "shuffled_target_collapsed": true,
+    "no_future_information": true,
+    "same_feature_function_used": true
+  },
+  "intended_use": "Decision-support situational awareness for disaster planning in Tamil Nadu.",
+  "prohibited_claims": [
+    "Physical flood inundation depth",
+    "Certified emergency evacuation directive",
+    "Guaranteed absence of localized flooding in unmonitored zones"
+  ]
+}

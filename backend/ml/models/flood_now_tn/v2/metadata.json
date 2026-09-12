@@ -1,0 +1,63 @@
+{
+  "model_name": "FloodNow TN v2",
+  "model_version": "2.0.0",
+  "serialized_class": "<class 'sklearn.calibration.CalibratedClassifierCV'>",
+  "selected_algorithm": "RandomForestClassifier",
+  "feature_order": [
+    "month_sin",
+    "month_cos",
+    "rain_1h_mm",
+    "rain_3h_mm",
+    "rain_6h_mm",
+    "rain_24h_mm",
+    "rain_72h_mm",
+    "soil_moisture_0_7cm",
+    "soil_moisture_7_28cm"
+  ],
+  "training_dataset_sha256": "a590280ca8f8bcd87ca3dc96be6e7810d7137cbb684aec3e9ee383606b39f84b",
+  "splits": {
+    "train": {
+      "sample_count": 1033,
+      "positives": 517,
+      "year_range": [
+        1969,
+        2012
+      ]
+    },
+    "val": {
+      "sample_count": 344,
+      "positives": 169,
+      "year_range": [
+        2013,
+        2018
+      ]
+    },
+    "test": {
+      "sample_count": 57,
+      "positives": 31,
+      "year_range": [
+        2019,
+        2022
+      ]
+    }
+  },
+  "random_seed": 42,
+  "created_at": "2026-09-12T23:43:18.570262+00:00",
+  "git_commit_sha": "766fe5e81543be0a882fb43780c50aeb74f5ef05",
+  "dependencies": {
+    "python": "3.12.4",
+    "scikit-learn": "1.9.1",
+    "pandas": "2.3.3",
+    "numpy": "2.1.1",
+    "joblib": "1.6.0",
+    "pyarrow": "24.0.0"
+  },
+  "bootstrap_iterations": 1000,
+  "calibrated": true,
+  "calibration_method": "sigmoid (Platt scaling on validation set)",
+  "risk_thresholds": {
+    "moderate": 0.35,
+    "high": 0.55,
+    "critical": 0.75
+  }
+}

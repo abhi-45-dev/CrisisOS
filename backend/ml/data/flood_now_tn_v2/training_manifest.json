@@ -1,0 +1,197 @@
+{
+  "dataset_name": "FloodNow TN v2 Tabular Occurrence Dataset",
+  "version": "2.0.0",
+  "created_at": "2026-09-12T23:42:25.511378+00:00",
+  "total_rows": 1434,
+  "positive_samples": 717,
+  "weak_negative_samples": 717,
+  "class_balance": {
+    "positive_count": 717,
+    "negative_count": 717,
+    "positive_prevalence": 0.5
+  },
+  "ifi_source": {
+    "dataset": "India Flood Inventory v3",
+    "doi": "10.5281/zenodo.16994648",
+    "file": "India_Flood_Inventory_v3.csv",
+    "md5": "fea75a9ff9eba8fb328eaddfacd21d67",
+    "sha256": "ef9ab2cd0db7bf917dcc22c7cb094ec599f5013ef1b96ba525d816f26ff1b108",
+    "raw_tn_records": 188,
+    "raw_tn_ifi_events": 188,
+    "district_event_observations": 717,
+    "observation_notes": "188 raw Tamil Nadu multi-district event records in IFI v3 expand into 717 district-event observations across 38 districts.",
+    "accepted_positives": 717,
+    "rejected_positives_count": 9,
+    "rejected_positives_sample": [
+      {
+        "uei": "UEI-IMD-FL-1976-0027",
+        "raw_districts": "nan",
+        "reason": "NO_DISTRICT_SPECIFIED",
+        "value": "1976-05-11"
+      },
+      {
+        "uei": "UEI-IMD-FL-2002-0056",
+        "raw_districts": "many parts",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2002-10-27"
+      },
+      {
+        "uei": "UEI-IMD-FL-2003-0092",
+        "raw_districts": "south tripura",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2003-06-25"
+      },
+      {
+        "uei": "UEI-IMD-FL-2010-0127",
+        "raw_districts": "many districts of tamil nadu.",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2010-11-22"
+      },
+      {
+        "uei": "UEI-IMD-FL-2010-0129",
+        "raw_districts": "many districts of tamil nadu.",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2010-11-30"
+      },
+      {
+        "uei": "UEI-IMD-FL-2011-0091",
+        "raw_districts": "districts of cauvery delta zone",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2011-11-01"
+      },
+      {
+        "uei": "UEI-IMD-FL-2011-0092",
+        "raw_districts": "districts of cauvery delta",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2011-11-24"
+      },
+      {
+        "uei": "UEI-IMD-FL-2012-0073",
+        "raw_districts": "many parts of tamil nadu.",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2012-10-20"
+      },
+      {
+        "uei": "UEI-IMD-FL-2017-0109",
+        "raw_districts": "karaikal",
+        "reason": "AMBIGUOUS_OR_NON_TN_LOCATION",
+        "value": "2017-02-11"
+      }
+    ]
+  },
+  "district_centroids_provenance": {
+    "source": "OpenStreetMap / Survey of India District Administrative Headquarter and Geographic Centroids for 38 Tamil Nadu Revenue Districts",
+    "role_in_system": "Transparent spatial lookup metadata used exclusively to query ERA5 historical reanalysis and live Open-Meteo weather. Latitude and longitude are excluded from predictive model features to eliminate coordinate memorization and ensure purely physical/environmental hazard inference."
+  },
+  "environmental_source": {
+    "provider": "Open-Meteo Historical Archive API (ERA5 / ERA5-Land Reanalysis)",
+    "url": "https://archive-api.open-meteo.com/v1/archive",
+    "temporal_resolution": "Hourly reanalysis with strict pre-event antecedent windowing",
+    "spatial_resolution": "District-level coordinates across 38 Tamil Nadu districts"
+  },
+  "negative_sampling": {
+    "method": "Spatially matched to positive districts with seasonal offsets (20-220 days)",
+    "exclusion_window_days": 14,
+    "rejection_criteria": "Rejected if date falls within +-14 days of any recorded flood in district",
+    "rejected_negative_candidates_count": 38,
+    "random_seed": 42
+  },
+  "canonical_features": [
+    "latitude",
+    "longitude",
+    "month_sin",
+    "month_cos",
+    "rain_1h_mm",
+    "rain_3h_mm",
+    "rain_6h_mm",
+    "rain_24h_mm",
+    "rain_72h_mm",
+    "soil_moisture_0_7cm",
+    "soil_moisture_7_28cm"
+  ],
+  "feature_definitions": {
+    "latitude": "WGS84 latitude coordinate (degrees)",
+    "longitude": "WGS84 longitude coordinate (degrees)",
+    "month_sin": "Cyclic sine transform of calendar month: sin(2*pi*month/12)",
+    "month_cos": "Cyclic cosine transform of calendar month: cos(2*pi*month/12)",
+    "rain_1h_mm": "Antecedent 1-hour precipitation accumulation ending before prediction timestamp (mm)",
+    "rain_3h_mm": "Antecedent 3-hour precipitation accumulation ending before prediction timestamp (mm)",
+    "rain_6h_mm": "Antecedent 6-hour precipitation accumulation ending before prediction timestamp (mm)",
+    "rain_24h_mm": "Antecedent 24-hour precipitation accumulation ending before prediction timestamp (mm)",
+    "rain_72h_mm": "Antecedent 72-hour precipitation accumulation ending before prediction timestamp (mm)",
+    "soil_moisture_0_7cm": "Antecedent volumetric root-zone soil moisture at 0-7cm depth (m3/m3)",
+    "soil_moisture_7_28cm": "Antecedent volumetric root-zone soil moisture at 7-28cm depth (m3/m3)"
+  },
+  "data_quality_audit": {
+    "total_rows": 1434,
+    "duplicate_rows": 0,
+    "unique_event_groups": 897,
+    "latitude_range": [
+      8.0883,
+      13.1432
+    ],
+    "longitude_range": [
+      76.695,
+      80.2707
+    ],
+    "year_range": [
+      1969,
+      2022
+    ],
+    "feature_missingness": {
+      "latitude": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "longitude": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "month_sin": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "month_cos": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "rain_1h_mm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "rain_3h_mm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "rain_6h_mm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "rain_24h_mm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "rain_72h_mm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "soil_moisture_0_7cm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      },
+      "soil_moisture_7_28cm": {
+        "null_count": 0,
+        "null_pct": 0.0
+      }
+    }
+  },
+  "location_resolution_stats": {
+    "district_centroid_count": 1434,
+    "district_centroid_pct": 100.0
+  },
+  "dataset_hashes": {
+    "parquet_path": "ml/data/flood_now_tn_v2/training_dataset.parquet",
+    "md5": "6c7db4f79481ca909bd4ce246ba470c5",
+    "sha256": "a590280ca8f8bcd87ca3dc96be6e7810d7137cbb684aec3e9ee383606b39f84b"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "features": [
+    "month_sin",
+    "month_cos",
+    "rain_1h_mm",
+    "rain_3h_mm",
+    "rain_6h_mm",
+    "rain_24h_mm",
+    "rain_72h_mm",
+    "soil_moisture_0_7cm",
+    "soil_moisture_7_28cm"
+  ],
+  "target": "target",
+  "feature_medians": {
+    "month_sin": -0.5,
+    "month_cos": 0.5,
+    "rain_1h_mm": 0.0,
+    "rain_3h_mm": 0.0,
+    "rain_6h_mm": 0.1,
+    "rain_24h_mm": 1.6,
+    "rain_72h_mm": 5.3,
+    "soil_moisture_0_7cm": 0.286,
+    "soil_moisture_7_28cm": 0.26
+  },
+  "risk_thresholds": {
+    "moderate": 0.35,
+    "high": 0.55,
+    "critical": 0.75
+  }
+}
