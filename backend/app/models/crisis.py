@@ -29,6 +29,6 @@ class Crisis(BaseModel):
     severity: float = Field(ge=0, le=10)
     description: str
     disaster_parameters: dict[str, Any] = Field(default_factory=dict)
-    region_name: str = "Harbor City"
+    region_name: str = "Tamil Nadu"
     latitude: float = 13.0827
     longitude: float = 80.2707

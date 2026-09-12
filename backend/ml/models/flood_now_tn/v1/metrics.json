@@ -1,0 +1,59 @@
+{
+  "model_name": "FloodNow TN",
+  "version": "1.0.0",
+  "evaluation_timestamp": "2026-09-12T19:40:58.538680+00:00",
+  "validation_comparison": {
+    "DummyClassifier": {
+      "pr_auc": 0.4927,
+      "brier_score": 0.2734
+    },
+    "LogisticRegression": {
+      "pr_auc": 1.0,
+      "brier_score": 0.0002
+    },
+    "RandomForestClassifier": {
+      "pr_auc": 1.0,
+      "brier_score": 0.0001
+    },
+    "TunedRandomForest": {
+      "pr_auc": 1.0,
+      "brier_score": 0.0001
+    }
+  },
+  "selected_algorithm": "LogisticRegression",
+  "held_out_test_metrics": {
+    "pr_auc": 1.0,
+    "roc_auc": 1.0,
+    "brier_score": 0.0005,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "accuracy": 1.0,
+    "confusion_matrix": [
+      [
+        200,
+        0
+      ],
+      [
+        0,
+        316
+      ]
+    ],
+    "test_sample_count": 516,
+    "test_positive_count": 316
+  },
+  "calibration": {
+    "method": "sigmoid",
+    "evaluated_brier_score": 0.0005,
+    "calibration_curve": [
+      {
+        "predicted_probability": 0.0026,
+        "true_frequency": 0.0
+      },
+      {
+        "predicted_probability": 0.9916,
+        "true_frequency": 1.0
+      }
+    ]
+  }
+}

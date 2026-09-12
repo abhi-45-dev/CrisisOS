@@ -13,12 +13,12 @@ def _split_origins(raw: str) -> list[str]:
 
 
 class Settings:
-    APP_NAME: str = "CrisisOS"
-    APP_VERSION: str = "0.1.0"
+    APP_NAME: str = "DisasterPulse TN"
+    APP_VERSION: str = "1.0.0"
     APP_DESCRIPTION: str = (
-        "AI-powered crisis intelligence, decision-support, and response "
-        "simulation platform. Human-in-the-loop only — not an operational "
-        "dispatch or infrastructure control system."
+        "Evidence-backed flood intelligence and risk-aware evacuation decision "
+        "support for Tamil Nadu. Decision-support only — not an authoritative "
+        "emergency dispatch system."
     )
 
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")

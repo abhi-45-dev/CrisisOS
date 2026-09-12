@@ -2,6 +2,8 @@ from app.models.crisis import DisasterType
 from app.models.location import RiskLevel, RoadStatus, Zone, ZoneEvacuationStatus
 from app.models.response import RiskResult
 from app.world import CrisisWorld
+from ml.predictor import model_status, predict_flood
+from app.services.weather_service import get_live_rainfall
 
 
 def score_to_level(score: float) -> RiskLevel:
@@ -36,6 +38,7 @@ def _common_factors(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], 
     )
     resource_gap = _clamp(40 - nearby_resources * 12)
     infra = _clamp(blocked * 22 + dangerous * 14)
+    common_score = 0.20 * exposure + 0.20 * vuln + 0.15 * infra + 0.15 * access + 0.10 * resource_gap
     factors = [
         {"name": "population_exposure", "score": round(exposure, 2)},
         {"name": "vulnerability", "score": round(vuln, 2)},
@@ -48,29 +51,72 @@ def _common_factors(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], 
         f"{blocked} blocked and {dangerous} dangerous roads adjacent to {zone.id}",
         f"{nearby_resources} resource caches currently in {zone.name}",
     ]
-    return 0.12 * exposure + 0.1 * vuln + 0.08 * infra + 0.08 * access + 0.05 * resource_gap, factors, evidence
+    return common_score, factors, evidence
 
 
 def _flood_score(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
-    p = zone.parameters
-    rainfall = _clamp(float(p.get("rainfall_mm", 0)) / 2.2)
-    water = _clamp(float(p.get("water_level_m", 0)) / 0.05)
-    water_change = _clamp(float(p.get("water_level_change_m", 0)) / 0.012)
-    drainage = _clamp(100 - float(p.get("drainage_capacity_pct", 70)))
-    inundation = _clamp(float(p.get("inundation_risk", 0)) * 100)
-    specific = 0.22 * water + 0.14 * rainfall + 0.12 * drainage + 0.14 * inundation + 0.08 * water_change
-    factors = [
-        {"name": "rainfall", "score": round(rainfall, 2), "value": p.get("rainfall_mm")},
-        {"name": "water_level", "score": round(water, 2), "value": p.get("water_level_m")},
-        {"name": "water_level_change", "score": round(water_change, 2), "value": p.get("water_level_change_m")},
-        {"name": "drainage_capacity_deficit", "score": round(drainage, 2), "value": p.get("drainage_capacity_pct")},
-        {"name": "inundation_risk", "score": round(inundation, 2), "value": p.get("inundation_risk")},
-    ]
-    evidence = [
-        f"Rainfall {p.get('rainfall_mm', 0)} mm, water level {p.get('water_level_m', 0)} m",
-        f"Drainage capacity {p.get('drainage_capacity_pct', 0)}%",
-    ]
-    return specific, factors, evidence
+    """Flood hazard score is the ML model percentile, not a hand-weighted formula."""
+    weather = get_live_rainfall()
+    params = world.crisis.disaster_parameters
+    zone_params = zone.parameters
+    override = params.get("scenario_rainfall_override_mm")
+    if override is not None:
+        rainfall_24h = float(override)
+        rainfall_source = "what-if scenario override"
+    elif zone_params.get("rainfall_mm") is not None:
+        rainfall_24h = float(zone_params.get("rainfall_mm") or 0.0)
+        rainfall_source = "CrisisOS zone observation"
+    elif weather.get("available") and weather.get("rainfall_24h_mm") is not None:
+        rainfall_24h = float(weather["rainfall_24h_mm"])
+        rainfall_source = "Open-Meteo"
+    else:
+        rainfall_24h = 0.0
+        rainfall_source = "unavailable; zero-observation input"
+
+    month = __import__("datetime").datetime.now().month
+    duration_days = float(zone_params.get("flood_duration_days") or 1.0)
+    affected_districts = int(max(1, float(zone_params.get("affected_districts") or 1)))
+    affected_states = int(max(1, float(zone_params.get("affected_states") or 1)))
+    state = str(zone_params.get("state") or "TAMIL NADU")
+    cause = str(zone_params.get("main_cause") or "FLOOD")
+
+    try:
+        prediction = predict_flood(
+            state=state,
+            rainfall_mm=rainfall_24h,
+            month=month,
+            duration_days=duration_days,
+            affected_districts=affected_districts,
+            affected_states=affected_states,
+            main_cause=cause,
+        )
+        score = float(prediction["risk_score"])
+        band = prediction["band"]
+        factors = [
+            {
+                "name": "ml_flood_severity",
+                "score": round(score, 2),
+                "prediction": prediction["prediction"],
+                "severe_probability": round(float(prediction["severe_probability"]), 6),
+                "probabilities": prediction.get("probabilities", {}),
+                "band": band,
+                "model": prediction["algorithm"],
+                "model_version": prediction["model_version"],
+            },
+            {"name": "live_or_scenario_rainfall", "score": round(rainfall_24h, 2), "value": rainfall_24h, "source": rainfall_source},
+        ]
+        factors.extend({"name": f"feature_importance:{row['feature']}", "score": round(float(row["importance_mean"]), 6)} for row in prediction.get("top_features", [])[:4])
+        evidence = [
+            f"Trained {prediction['algorithm']} predicted {prediction['prediction']} with severe+ probability {float(prediction['severe_probability']) * 100:.1f}%.",
+            f"Rainfall input: {rainfall_24h:.1f} mm over 24h from {rainfall_source}.",
+            f"Model version: {prediction['model_version']}.",
+            f"Training source: {prediction['dataset']}.",
+        ]
+        return score, factors, evidence
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Flood ML inference failed: {exc}") from exc
 
 
 def _cyclone_score(world: CrisisWorld, zone: Zone) -> tuple[float, list[dict], list[str]]:
@@ -130,8 +176,19 @@ def calculate_zone_risk(world: CrisisWorld, zone: Zone) -> RiskResult:
         specific, factors, evidence = _cyclone_score(world, zone)
     else:
         specific, factors, evidence = _earthquake_score(world, zone)
-    score = _clamp(common + specific)
-    level = score_to_level(score)
+    if dtype == DisasterType.FLOOD:
+        score = _clamp(specific)
+        # ML-derived percentile bands are model/data-derived, not hand-picked weights.
+        try:
+            band = next((f.get("score") for f in factors if f.get("name") == "ml_flood_severity"), score)
+            # The model itself produced the percentile score; operational RiskLevel mirrors the model band.
+            ml_band = next((f.get("band") for f in factors if f.get("name") == "ml_flood_severity"), "MODERATE")
+            level = {"LOW": RiskLevel.LOW, "MODERATE": RiskLevel.MODERATE, "HIGH": RiskLevel.HIGH, "CRITICAL": RiskLevel.CRITICAL}.get(str(ml_band), score_to_level(score))
+        except Exception:
+            level = score_to_level(score)
+    else:
+        score = _clamp(common + specific)
+        level = score_to_level(score)
     return RiskResult(
         zone_id=zone.id,
         zone_name=zone.name,

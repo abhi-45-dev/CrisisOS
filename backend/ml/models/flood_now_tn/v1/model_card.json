@@ -1,0 +1,11 @@
+{
+  "model_name": "FloodNow TN",
+  "version": "1.0.0",
+  "purpose": "Supervised binary flood occurrence probability prediction across Tamil Nadu space-time units.",
+  "algorithm": "LogisticRegression",
+  "training_data_source": "India Flood Inventory v3 (Zenodo record 16994648) with weak-negative non-event sampling.",
+  "prospective_guarantee": "Only prospective features constructible at inference time are used. Post-event impact features are strictly excluded.",
+  "temporal_validation": "Train partition: <=2012, Val partition: 2013-2018, Test partition: 2019-2023 (unseen). Hyperparameter search with TimeSeriesSplit.",
+  "calibration": "Calibrated with Sigmoid scaling on validation partition.",
+  "limitations": "Absence of an event in IFI does not guarantee zero local hyper-local pooling. Predictions serve decision support, not certified emergency dispatch."
+}

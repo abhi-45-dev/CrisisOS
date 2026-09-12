@@ -1,0 +1,39 @@
+{
+  "dataset_name": "FloodNow TN Supervised Flood Occurrence Dataset",
+  "version": "3.0.0",
+  "created_at": "2026-09-12T19:40:07.841088+00:00",
+  "total_rows": 3532,
+  "positive_samples": 1413,
+  "negative_samples": 2119,
+  "class_balance": {
+    "flood_occurrence_1": 1413,
+    "no_flood_0": 2119,
+    "positive_ratio": 0.4001
+  },
+  "temporal_coverage": {
+    "start_year": 1970,
+    "end_year": 2023,
+    "distinct_years": 53
+  },
+  "geographic_scope": "Tamil Nadu & Southern India",
+  "primary_positive_source": {
+    "name": "India Flood Inventory v3 (1967-2023)",
+    "doi": "10.5281/zenodo.16994648",
+    "zenodo_record": "16994648",
+    "md5": "fea75a9ff9eba8fb328eaddfacd21d67"
+  },
+  "negative_sampling_method": "Weak negatives: seasonally/geographically matched non-flood observation windows. Note: Absence from inventory does not guarantee complete absence of hyper-local water ponding.",
+  "feature_definitions": {
+    "latitude": "WGS84 latitude coordinate (degrees)",
+    "longitude": "WGS84 longitude coordinate (degrees)",
+    "month_sin": "Cyclic sine transform of calendar month: sin(2*pi*month/12)",
+    "month_cos": "Cyclic cosine transform of calendar month: cos(2*pi*month/12)",
+    "rain_24h_mm": "Estimated/observed 24-hour antecedent precipitation accumulation (mm)",
+    "rain_72h_mm": "Estimated/observed 72-hour antecedent precipitation accumulation (mm)",
+    "soil_moisture": "Estimated root-zone volumetric soil moisture (0.0 to 1.0 m3/m3)",
+    "elevation_m": "Topographic elevation above sea level (meters)",
+    "slope_deg": "Terrain slope gradient (degrees)",
+    "distance_to_water_km": "Distance to nearest major river corridor or coastline (km)"
+  },
+  "leakage_exclusion_audit": "Post-event impact variables (duration_days, affected_districts, damage text) are strictly excluded from predictors."
+}

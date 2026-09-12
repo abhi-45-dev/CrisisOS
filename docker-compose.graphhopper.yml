@@ -1,0 +1,17 @@
+services:
+  graphhopper:
+    image: israelhikingmap/graphhopper:latest
+    container_name: disasterpulse-graphhopper
+    restart: unless-stopped
+    ports:
+      - "8989:8989"
+    environment:
+      - JAVA_OPTS=-Xmx4g -Xms1g
+    volumes:
+      - ./backend/cache/graphhopper/data:/data
+    command: >
+      sh -c "if [ ! -f /data/southern-zone-latest.osm.pbf ]; then
+        echo 'Downloading Geofabrik Southern Zone OSM PBF...';
+        wget -O /data/southern-zone-latest.osm.pbf https://download.geofabrik.de/asia/india/southern-zone-latest.osm.pbf;
+      fi &&
+      graphhopper.sh -i /data/southern-zone-latest.osm.pbf -o /data/gh-graph-cache -c /data/config.yml server"

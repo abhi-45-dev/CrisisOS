@@ -1,23 +1,5 @@
-from app.agents.analyst import AnalystAgent
-from app.agents.critic import CriticAgent
-from app.agents.planner import PlannerAgent
-from app.agents.resource import ResourceAgent
-from app.agents.risk import RiskAgent
-from app.agents.what_if import WhatIfAgent
-from app.services.llm_service import llm_service
+"""DisasterPulse TN Grounded AI Agents (Phase 15).
 
-analyst_agent = AnalystAgent(llm_service)
-risk_agent = RiskAgent(llm_service)
-resource_agent = ResourceAgent(llm_service)
-planner_agent = PlannerAgent(llm_service)
-critic_agent = CriticAgent(llm_service)
-what_if_agent = WhatIfAgent(llm_service)
-
-__all__ = [
-    "analyst_agent",
-    "critic_agent",
-    "planner_agent",
-    "resource_agent",
-    "risk_agent",
-    "what_if_agent",
-]
+All agents here are strictly grounded in real, structured backend telemetry
+and model predictions. No synthetic entities or fictional heuristics are used.
+"""

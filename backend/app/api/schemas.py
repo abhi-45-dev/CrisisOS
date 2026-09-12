@@ -61,6 +61,19 @@ class PlanRequest(BaseModel):
     objective: str | None = "Create an evacuation plan."
 
 
+
+
+class FloodPredictRequest(BaseModel):
+    state: str = "TAMIL NADU"
+    rainfall_24h_mm: float = Field(ge=0, default=0)
+    month: int = Field(ge=1, le=12, default=7)
+    duration_days: float = Field(ge=1, default=1)
+    affected_districts: int = Field(ge=0, default=1)
+    affected_states: int = Field(ge=1, default=1)
+    main_cause: str = "FLOOD"
+    latitude: float | None = None
+    longitude: float | None = None
+
 class WhatIfRequest(BaseModel):
     disaster_type: str = "flood"
     question: str

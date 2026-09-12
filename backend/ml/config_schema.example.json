@@ -1,0 +1,8 @@
+{
+  "flood_dataset_provider": "zenodo",
+  "flood_dataset_url": "https://zenodo.org/records/11275211/files/India_Flood_Inventory_v3.csv?download=1",
+  "rainfall_source": "event_text",
+  "rainfall_csv": "",
+  "kaggle_dataset": "",
+  "kaggle_file": ""
+}

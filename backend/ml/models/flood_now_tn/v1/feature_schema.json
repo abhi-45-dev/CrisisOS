@@ -1,0 +1,48 @@
+{
+  "features": [
+    "latitude",
+    "longitude",
+    "month_sin",
+    "month_cos",
+    "rain_24h_mm",
+    "rain_72h_mm",
+    "soil_moisture",
+    "elevation_m",
+    "slope_deg",
+    "distance_to_water_km"
+  ],
+  "feature_means": {
+    "latitude": 11.9054,
+    "longitude": 79.2901,
+    "month_sin": -0.146,
+    "month_cos": -0.1092,
+    "rain_24h_mm": 53.9988,
+    "rain_72h_mm": 108.2717,
+    "soil_moisture": 0.2753,
+    "elevation_m": 137.1461,
+    "slope_deg": 1.8251,
+    "distance_to_water_km": 5.6744
+  },
+  "risk_bands": {
+    "low": {
+      "min": 0.0,
+      "max": 0.35,
+      "description": "Minimal flood likelihood"
+    },
+    "moderate": {
+      "min": 0.35,
+      "max": 0.6,
+      "description": "Elevated soil moisture or moderate runoff"
+    },
+    "high": {
+      "min": 0.6,
+      "max": 0.8,
+      "description": "High likelihood of surface inundation"
+    },
+    "critical": {
+      "min": 0.8,
+      "max": 1.0,
+      "description": "Severe recorded flood hazard signature"
+    }
+  }
+}

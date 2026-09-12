@@ -29,6 +29,12 @@ class WhatIfAgent:
             f"Evacuation completion {before_evac['evacuation_completion']} -> {after_evac['evacuation_completion']}",
             f"Plan-like overall score {raw['before_sim']['overall_score']} -> {raw['after_sim']['overall_score']}",
         ]
+        if raw.get("ml_flood") and raw["ml_flood"].get("before") and raw["ml_flood"].get("after"):
+            before_ml = raw["ml_flood"]["before"]
+            after_ml = raw["ml_flood"]["after"]
+            impacts.append(
+                f"ML flood severity {before_ml.get('prediction', before_ml.get('value', 0))} -> {after_ml.get('prediction', after_ml.get('value', 0))} ({before_ml.get('band')} -> {after_ml.get('band')})"
+            )
         for row in raw["changed_risk"][:6]:
             impacts.append(
                 f"{row['zone_name']} risk {row['before']} -> {row['after']} (delta {row['delta']})"
@@ -47,11 +53,13 @@ class WhatIfAgent:
                 "average_risk": raw["before_sim"]["average_risk"],
                 "evacuation": before_evac,
                 "overall_score": raw["before_sim"]["overall_score"],
+                "ml_flood": raw.get("ml_flood", {}).get("before") if raw.get("ml_flood") else None,
             },
             after={
                 "average_risk": raw["after_sim"]["average_risk"],
                 "evacuation": after_evac,
                 "overall_score": raw["after_sim"]["overall_score"],
+                "ml_flood": raw.get("ml_flood", {}).get("after") if raw.get("ml_flood") else None,
             },
             changes=changes,
             impacts=impacts,

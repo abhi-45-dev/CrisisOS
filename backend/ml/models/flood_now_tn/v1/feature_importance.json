@@ -1,0 +1,44 @@
+{
+  "global_mdi_importance": [
+    {
+      "feature": "rain_72h_mm",
+      "importance": 0.3312
+    },
+    {
+      "feature": "rain_24h_mm",
+      "importance": 0.276
+    },
+    {
+      "feature": "soil_moisture",
+      "importance": 0.1731
+    },
+    {
+      "feature": "longitude",
+      "importance": 0.0984
+    },
+    {
+      "feature": "latitude",
+      "importance": 0.0625
+    },
+    {
+      "feature": "elevation_m",
+      "importance": 0.033
+    },
+    {
+      "feature": "distance_to_water_km",
+      "importance": 0.0144
+    },
+    {
+      "feature": "slope_deg",
+      "importance": 0.0106
+    },
+    {
+      "feature": "month_cos",
+      "importance": 0.0005
+    },
+    {
+      "feature": "month_sin",
+      "importance": 0.0003
+    }
+  ]
+}
