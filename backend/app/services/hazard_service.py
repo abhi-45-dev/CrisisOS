@@ -44,26 +44,35 @@ class HazardService:
 
             # Query cached weather for coordinate
             weather = weather_provider.get_weather_at_coordinate(lat, lon)
+            r1 = float(weather.get("rain_1h_mm") or 0.0)
+            r3 = float(weather.get("rain_3h_mm") or 0.0)
+            r6 = float(weather.get("rain_6h_mm") or 0.0)
             r24 = float(weather.get("rain_24h_mm") or 15.0)
             r72 = float(weather.get("rain_72h_mm") or 35.0)
-            sm = float(weather.get("soil_moisture_0_7cm") or 0.28)
+            sm_top = float(weather.get("soil_moisture_0_7cm") or 0.28)
+            sm_root = float(weather.get("soil_moisture_7_28cm") or sm_top)
 
             if rainfall_override_mm is not None:
+                r1 += rainfall_override_mm * 0.1
+                r3 += rainfall_override_mm * 0.25
+                r6 += rainfall_override_mm * 0.5
                 r24 += rainfall_override_mm
                 r72 += rainfall_override_mm * 1.5
-                sm = min(0.65, sm + (rainfall_override_mm / 250.0))
+                sm_top = min(0.65, sm_top + (rainfall_override_mm / 250.0))
+                sm_root = min(0.65, sm_root + (rainfall_override_mm / 300.0))
 
             pred_features = {
                 "latitude": lat,
                 "longitude": lon,
                 "month_sin": round(math_sin(current_month), 4),
                 "month_cos": round(math_cos(current_month), 4),
+                "rain_1h_mm": r1,
+                "rain_3h_mm": r3,
+                "rain_6h_mm": r6,
                 "rain_24h_mm": r24,
                 "rain_72h_mm": r72,
-                "soil_moisture": sm,
-                "elevation_m": 45.0 if lon > 79.5 else 180.0,
-                "slope_deg": 1.0 if lon > 79.5 else 3.5,
-                "distance_to_water_km": 3.0 if lon > 79.8 else 10.0,
+                "soil_moisture_0_7cm": sm_top,
+                "soil_moisture_7_28cm": sm_root,
             }
 
             prediction = flood_now_inference.predict(pred_features)
@@ -76,7 +85,7 @@ class HazardService:
                     "flood_probability": prediction["flood_probability"],
                     "risk_band": prediction["risk_band"],
                     "observed_rain_24h_mm": r24,
-                    "soil_moisture": sm,
+                    "soil_moisture": sm_top,
                     "model_version": prediction["model_version"],
                     "inference_timestamp": prediction["inference_timestamp"],
                     "local_explanations": prediction["local_explanations"],
@@ -89,7 +98,7 @@ class HazardService:
             "metadata": {
                 "generated_at": now.isoformat(),
                 "cell_count": len(features),
-                "model_version": "FloodNow TN v1.0.0",
+                "model_version": "FloodNow TN v2.0.0",
                 "scenario_override_mm": rainfall_override_mm,
             },
             "features": features,
@@ -107,26 +116,35 @@ class HazardService:
         weather = weather_provider.get_weather_at_coordinate(lat, lon)
 
         now = datetime.now(timezone.utc)
+        r1 = float(weather.get("rain_1h_mm") or 0.0)
+        r3 = float(weather.get("rain_3h_mm") or 0.0)
+        r6 = float(weather.get("rain_6h_mm") or 0.0)
         r24 = float(weather.get("rain_24h_mm") or 15.0)
         r72 = float(weather.get("rain_72h_mm") or 35.0)
-        sm = float(weather.get("soil_moisture_0_7cm") or 0.28)
+        sm_top = float(weather.get("soil_moisture_0_7cm") or 0.28)
+        sm_root = float(weather.get("soil_moisture_7_28cm") or sm_top)
 
         if rainfall_override_mm is not None:
+            r1 += rainfall_override_mm * 0.1
+            r3 += rainfall_override_mm * 0.25
+            r6 += rainfall_override_mm * 0.5
             r24 += rainfall_override_mm
             r72 += rainfall_override_mm * 1.5
-            sm = min(0.65, sm + (rainfall_override_mm / 250.0))
+            sm_top = min(0.65, sm_top + (rainfall_override_mm / 250.0))
+            sm_root = min(0.65, sm_root + (rainfall_override_mm / 300.0))
 
         features = {
             "latitude": lat,
             "longitude": lon,
             "month_sin": round(math_sin(now.month), 4),
             "month_cos": round(math_cos(now.month), 4),
+            "rain_1h_mm": r1,
+            "rain_3h_mm": r3,
+            "rain_6h_mm": r6,
             "rain_24h_mm": r24,
             "rain_72h_mm": r72,
-            "soil_moisture": sm,
-            "elevation_m": 25.0 if lon > 79.5 else 120.0,
-            "slope_deg": 1.2 if lon > 79.5 else 2.5,
-            "distance_to_water_km": 2.5 if lon > 79.8 else 8.0,
+            "soil_moisture_0_7cm": sm_top,
+            "soil_moisture_7_28cm": sm_root,
         }
 
         res = flood_now_inference.predict(features)
@@ -134,7 +152,9 @@ class HazardService:
         res["weather_inputs"] = {
             "rain_24h_mm": r24,
             "rain_72h_mm": r72,
-            "soil_moisture": sm,
+            "soil_moisture": sm_top,
+            "soil_moisture_0_7cm": sm_top,
+            "soil_moisture_7_28cm": sm_root,
             "weather_source": weather.get("source", "Open-Meteo"),
             "observed_at": weather.get("observed_at"),
         }

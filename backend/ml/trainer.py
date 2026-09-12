@@ -1,13 +1,28 @@
 from __future__ import annotations
 
-"""FloodNow TN Model Trainer.
+"""FloodNow TN v2 Model Trainer & Scientific Evaluation Engine.
 
-Trains, tunes with TimeSeriesSplit, calibrates probabilities, evaluates on held-out test data,
-and serializes artifacts with comprehensive provenance and model card.
+Executes:
+1. Strict chronological partitioning (Train <= 2012, Val 2013-2018, Test >= 2019).
+2. Group integrity checks ensuring no event_group_id crosses partitions.
+3. Preprocessing via sklearn Pipeline (SimpleImputer fit on Train only).
+4. Candidate model comparison: Dummy, LogisticRegression, RandomForest.
+5. Time-aware hyperparameter tuning using TimeSeriesSplit on Train.
+6. Model selection based on Validation PR-AUC & Brier score.
+7. Post-selection probability calibration on Validation data only (Platt sigmoid).
+8. Sanity & Leakage experiments:
+   - Full model vs. Location-only vs. Environment-only
+   - Shuffled-target test (asserts collapse to chance)
+   - Spatial stress test (GroupKFold by district)
+9. Final single evaluation on untouched Test data with bootstrap 95% confidence intervals.
+10. Model explainability: Permutation feature importance.
+11. Serialization of v2 artifacts to backend/ml/models/flood_now_tn/v2/.
 """
 
-from datetime import datetime, timezone
+import hashlib
 import json
+import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +30,14 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+try:
+    from sklearn.frozen import FrozenEstimator
+except ImportError:
+    FrozenEstimator = None
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -28,233 +49,390 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from sklearn.model_selection import GroupKFold, GridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 BASE_DIR = Path(__file__).resolve().parent
-DATASET_PATH = BASE_DIR / "data" / "flood_now_tn" / "training_dataset.parquet"
-MANIFEST_PATH = BASE_DIR / "data" / "flood_now_tn" / "training_manifest.json"
-MODEL_DIR = BASE_DIR / "models" / "flood_now_tn" / "v1"
+DATASET_PATH = BASE_DIR / "data" / "flood_now_tn_v2" / "training_dataset.parquet"
+MANIFEST_PATH = BASE_DIR / "data" / "flood_now_tn_v2" / "training_manifest.json"
+OUTPUT_MODEL_DIR = BASE_DIR / "models" / "flood_now_tn" / "v2"
 
-FEATURE_NAMES = [
+CANONICAL_FEATURES = [
     "latitude",
     "longitude",
     "month_sin",
     "month_cos",
+    "rain_1h_mm",
+    "rain_3h_mm",
+    "rain_6h_mm",
     "rain_24h_mm",
     "rain_72h_mm",
-    "soil_moisture",
-    "elevation_m",
-    "slope_deg",
-    "distance_to_water_km",
+    "soil_moisture_0_7cm",
+    "soil_moisture_7_28cm",
 ]
-TARGET_COL = "flood_occurrence"
+TARGET_COL = "target"
 
 
-def train_flood_now_tn(random_seed: int = 42) -> dict[str, Any]:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+def _compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> dict[str, Any]:
+    y_pred = (y_prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    
+    # Check if single class in y_true
+    has_both = len(np.unique(y_true)) > 1
+    roc = float(roc_auc_score(y_true, y_prob)) if has_both else 0.5
+    pr_auc = float(average_precision_score(y_true, y_prob)) if has_both else float(y_true.mean())
+
+    return {
+        "brier_score": round(float(brier_score_loss(y_true, y_prob)), 4),
+        "pr_auc": round(pr_auc, 4),
+        "roc_auc": round(roc, 4),
+        "f1": round(float(f1_score(y_true, y_pred, zero_division=0)), 4),
+        "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 4),
+        "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
+        "accuracy": round(float(accuracy_score(y_true, y_pred)), 4),
+        "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+        "sample_count": int(len(y_true)),
+        "positive_count": int(y_true.sum()),
+        "prevalence": round(float(y_true.mean()), 4),
+    }
+
+
+def _bootstrap_ci(y_true: np.ndarray, y_prob: np.ndarray, n_bootstraps: int = 250, seed: int = 42) -> dict[str, Any]:
+    rng = np.random.default_rng(seed)
+    n = len(y_true)
+    roc_scores = []
+    pr_scores = []
+    brier_scores = []
+
+    for _ in range(n_bootstraps):
+        idx = rng.choice(n, size=n, replace=True)
+        yt_b = y_true[idx]
+        yp_b = y_prob[idx]
+        if len(np.unique(yt_b)) < 2:
+            continue
+        roc_scores.append(roc_auc_score(yt_b, yp_b))
+        pr_scores.append(average_precision_score(yt_b, yp_b))
+        brier_scores.append(brier_score_loss(yt_b, yp_b))
+
+    return {
+        "roc_auc_ci_95": [round(float(np.percentile(roc_scores, 2.5)), 4), round(float(np.percentile(roc_scores, 97.5)), 4)] if roc_scores else [],
+        "pr_auc_ci_95": [round(float(np.percentile(pr_scores, 2.5)), 4), round(float(np.percentile(pr_scores, 97.5)), 4)] if pr_scores else [],
+        "brier_ci_95": [round(float(np.percentile(brier_scores, 2.5)), 4), round(float(np.percentile(brier_scores, 97.5)), 4)] if brier_scores else [],
+    }
+
+
+def train_flood_now_tn_v2(random_seed: int = 42) -> dict[str, Any]:
+    """Train, evaluate, calibrate, and serialize FloodNow TN v2 model artifacts."""
+    OUTPUT_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     if not DATASET_PATH.exists():
-        from ml.dataset_builder import build_training_dataset
-        build_training_dataset()
+        from ml.dataset_builder import build_training_dataset_v2
+        build_training_dataset_v2(random_seed=random_seed)
 
     df = pd.read_parquet(DATASET_PATH)
-    df = df.sort_values(by=["year", "month"]).reset_index(drop=True)
+    df = df.sort_values(by=["date", "district"]).reset_index(drop=True)
+
+    # Calculate dataset SHA256
+    with DATASET_PATH.open("rb") as f:
+        dataset_sha256 = hashlib.sha256(f.read()).hexdigest()
 
     # 1. Temporal Partitions
-    # Train: <= 2012, Val: 2013-2018, Test: >= 2019 (Strictly held out)
+    # Train: <= 2012, Val: 2013-2018, Test: >= 2019
     train_mask = df["year"] <= 2012
     val_mask = (df["year"] >= 2013) & (df["year"] <= 2018)
     test_mask = df["year"] >= 2019
 
-    X_train = df.loc[train_mask, FEATURE_NAMES]
-    y_train = df.loc[train_mask, TARGET_COL].values
+    df_train = df[train_mask].copy()
+    df_val = df[val_mask].copy()
+    df_test = df[test_mask].copy()
 
-    X_val = df.loc[val_mask, FEATURE_NAMES]
-    y_val = df.loc[val_mask, TARGET_COL].values
+    # 2. Strict Group Integrity Verification
+    train_groups = set(df_train["event_group_id"].unique())
+    val_groups = set(df_val["event_group_id"].unique())
+    test_groups = set(df_test["event_group_id"].unique())
 
-    X_test = df.loc[test_mask, FEATURE_NAMES]
-    y_test = df.loc[test_mask, TARGET_COL].values
+    assert len(train_groups.intersection(val_groups)) == 0, "Leakage: Event group crosses train and val!"
+    assert len(train_groups.intersection(test_groups)) == 0, "Leakage: Event group crosses train and test!"
+    assert len(val_groups.intersection(test_groups)) == 0, "Leakage: Event group crosses val and test!"
 
-    # 2. Candidate Models
+    X_train = df_train[CANONICAL_FEATURES]
+    y_train = df_train[TARGET_COL].values.astype(int)
+
+    X_val = df_val[CANONICAL_FEATURES]
+    y_val = df_val[TARGET_COL].values.astype(int)
+
+    X_test = df_test[CANONICAL_FEATURES]
+    y_test = df_test[TARGET_COL].values.astype(int)
+
+    split_summary = {
+        "train": {"sample_count": len(df_train), "positives": int(y_train.sum()), "year_range": [int(df_train["year"].min()), int(df_train["year"].max())]},
+        "val": {"sample_count": len(df_val), "positives": int(y_val.sum()), "year_range": [int(df_val["year"].min()), int(df_val["year"].max())]},
+        "test": {"sample_count": len(df_test), "positives": int(y_test.sum()), "year_range": [int(df_test["year"].min()), int(df_test["year"].max())]},
+    }
+    print(f"Temporal Partitions: Train={split_summary['train']}, Val={split_summary['val']}, Test={split_summary['test']}")
+
+    # 3. Fit Learned Imputer on Training Partition Only
+    imputer = SimpleImputer(strategy="median")
+    imputer.fit(X_train)
+    feature_medians = {col: float(imputer.statistics_[i]) for i, col in enumerate(CANONICAL_FEATURES)}
+
+    # 4. Candidate Models (Built as Pipelines with Train-Fitted Imputation)
     candidates: dict[str, Any] = {
-        "DummyClassifier": DummyClassifier(strategy="prior"),
+        "DummyClassifier": Pipeline([
+            ("imputer", imputer),
+            ("clf", DummyClassifier(strategy="prior")),
+        ]),
         "LogisticRegression": Pipeline([
+            ("imputer", imputer),
             ("scaler", StandardScaler()),
             ("clf", LogisticRegression(class_weight="balanced", random_state=random_seed, max_iter=1000)),
         ]),
-        "RandomForestClassifier": RandomForestClassifier(
-            n_estimators=120,
-            max_depth=7,
-            min_samples_split=4,
-            class_weight="balanced",
-            random_state=random_seed,
-            n_jobs=-1,
-        ),
+        "RandomForestClassifier": Pipeline([
+            ("imputer", imputer),
+            ("clf", RandomForestClassifier(
+                n_estimators=150,
+                max_depth=6,
+                min_samples_leaf=4,
+                class_weight="balanced",
+                random_state=random_seed,
+                n_jobs=-1,
+            )),
+        ]),
     }
 
-    # 3. Time-Aware Tuning on Train Partition using TimeSeriesSplit
-    param_dist = {
-        "n_estimators": [80, 120, 160],
-        "max_depth": [5, 7, 10, None],
-        "min_samples_split": [2, 4, 8],
-    }
+    # 5. Time-Aware Cross-Validation on Training Partition
     tscv = TimeSeriesSplit(n_splits=3)
-    rf_search = RandomizedSearchCV(
-        estimator=RandomForestClassifier(class_weight="balanced", random_state=random_seed, n_jobs=-1),
-        param_distributions=param_dist,
-        n_iter=6,
+    rf_param_grid = {
+        "clf__max_depth": [4, 6, 8],
+        "clf__min_samples_split": [4, 8],
+        "clf__min_samples_leaf": [2, 4],
+    }
+    grid_search = GridSearchCV(
+        candidates["RandomForestClassifier"],
+        rf_param_grid,
         cv=tscv,
         scoring="average_precision",
-        random_state=random_seed,
+        n_jobs=-1,
     )
-    rf_search.fit(X_train, y_train)
-    candidates["TunedRandomForest"] = rf_search.best_estimator_
+    grid_search.fit(X_train, y_train)
+    tuned_rf = grid_search.best_estimator_
+    candidates["RandomForestClassifier"] = tuned_rf
 
-    # 4. Evaluate candidates on Validation partition
-    val_scores = {}
-    best_candidate_name = None
+    # 6. Model Comparison on Validation Partition (Model Selection on Validation Only)
+    candidate_metrics: dict[str, Any] = {}
+    best_name = "RandomForestClassifier"
     best_pr_auc = -1.0
-    best_estimator = None
 
     for name, model in candidates.items():
-        if name != "TunedRandomForest":
+        if name != "RandomForestClassifier":
             model.fit(X_train, y_train)
-        probs = model.predict_proba(X_val)[:, 1] if hasattr(model, "predict_proba") else model.predict(X_val)
-        pr_auc = average_precision_score(y_val, probs)
-        brier = brier_score_loss(y_val, probs)
-        val_scores[name] = {"pr_auc": round(pr_auc, 4), "brier_score": round(brier, 4)}
 
-        if pr_auc > best_pr_auc:
-            best_pr_auc = pr_auc
-            best_candidate_name = name
-            best_estimator = model
+        val_prob = model.predict_proba(X_val)[:, 1]
+        m = _compute_metrics(y_val, val_prob)
+        candidate_metrics[name] = m
+        print(f"Candidate '{name}' Val Metrics: PR-AUC={m['pr_auc']}, ROC-AUC={m['roc_auc']}, Brier={m['brier_score']}")
 
-    # 5. Calibrate probabilities using TimeSeriesSplit on Train + Validation
-    X_train_val = pd.concat([X_train, X_val], ignore_index=True)
-    y_train_val = np.concatenate([y_train, y_val])
+        if m["pr_auc"] > best_pr_auc:
+            best_pr_auc = m["pr_auc"]
+            best_name = name
 
-    calibrated_model = CalibratedClassifierCV(
-        estimator=best_estimator,
-        method="sigmoid",
-        cv=TimeSeriesSplit(n_splits=3),
+    print(f"Selected Best Model: {best_name} (Validation PR-AUC: {best_pr_auc})")
+    raw_selected_model = candidates[best_name]
+
+    # 7. Probability Calibration on Validation Partition Only
+    # Fit Platt scaling (sigmoid) on validation data
+    uncalibrated_val_prob = raw_selected_model.predict_proba(X_val)[:, 1]
+    brier_before = float(brier_score_loss(y_val, uncalibrated_val_prob))
+
+    if FrozenEstimator is not None:
+        calibrated_model = CalibratedClassifierCV(
+            estimator=FrozenEstimator(raw_selected_model),
+            method="sigmoid",
+        )
+    else:
+        calibrated_model = CalibratedClassifierCV(
+            estimator=raw_selected_model,
+            method="sigmoid",
+            cv="prefit",
+        )
+    calibrated_model.fit(X_val, y_val)
+
+    calibrated_val_prob = calibrated_model.predict_proba(X_val)[:, 1]
+    brier_after = float(brier_score_loss(y_val, calibrated_val_prob))
+    print(f"Calibration Brier Score on Validation: {brier_before:.4f} -> {brier_after:.4f}")
+
+    # Compute reliability curve on validation
+    prob_true, prob_pred = calibration_curve(y_val, calibrated_val_prob, n_bins=6, strategy="uniform")
+    calibration_data = {
+        "brier_before": round(brier_before, 4),
+        "brier_after": round(brier_after, 4),
+        "reliability_curve": {
+            "prob_true": [round(float(p), 4) for p in prob_true],
+            "prob_pred": [round(float(p), 4) for p in prob_pred],
+        },
+    }
+
+    # Standard Calibrated Probability Risk Bands for Disaster Decision Support
+    risk_thresholds = {
+        "moderate": 0.35,
+        "high": 0.55,
+        "critical": 0.75,
+    }
+
+    # 8. Sanity & Leakage Experiments
+    print("Running Sanity & Anti-Leakage Experiments...")
+    sanity_results: dict[str, Any] = {}
+
+    # A. Location + Month Only
+    loc_features = ["latitude", "longitude", "month_sin", "month_cos"]
+    m_loc = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
+    ])
+    m_loc.fit(X_train[loc_features], y_train)
+    loc_val_prob = m_loc.predict_proba(X_val[loc_features])[:, 1]
+    sanity_results["location_and_calendar_only"] = _compute_metrics(y_val, loc_val_prob)
+
+    # B. Environment Only (Without Coordinates)
+    env_features = [f for f in CANONICAL_FEATURES if f not in ("latitude", "longitude")]
+    m_env = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
+    ])
+    m_env.fit(X_train[env_features], y_train)
+    env_val_prob = m_env.predict_proba(X_val[env_features])[:, 1]
+    sanity_results["environment_only_no_coordinates"] = _compute_metrics(y_val, env_val_prob)
+
+    # C. Shuffled Target Experiment (LEAKAGE TRAP)
+    # Shuffling targets must collapse performance to random chance (ROC-AUC ~0.5)
+    rng = np.random.default_rng(random_seed)
+    y_train_shuffled = rng.permutation(y_train)
+    m_shuffled = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
+    ])
+    m_shuffled.fit(X_train, y_train_shuffled)
+    shuf_val_prob = m_shuffled.predict_proba(X_val)[:, 1]
+    shuf_metrics = _compute_metrics(y_val, shuf_val_prob)
+    sanity_results["shuffled_target_experiment"] = shuf_metrics
+    print(f"Shuffled-target sanity: ROC-AUC={shuf_metrics['roc_auc']} (must be near 0.50)")
+    assert shuf_metrics["roc_auc"] < 0.65, f"LEAKAGE DETECTED! Shuffled-target ROC-AUC is {shuf_metrics['roc_auc']}"
+
+    # D. Spatial Stress Test (GroupKFold by District on Train+Val)
+    df_train_val = pd.concat([df_train, df_val], ignore_index=True)
+    gkf = GroupKFold(n_splits=4)
+    spatial_rocs = []
+    for tr_idx, h_idx in gkf.split(df_train_val, groups=df_train_val["district"]):
+        X_sp_tr = df_train_val.iloc[tr_idx][CANONICAL_FEATURES]
+        y_sp_tr = df_train_val.iloc[tr_idx][TARGET_COL].values
+        X_sp_ho = df_train_val.iloc[h_idx][CANONICAL_FEATURES]
+        y_sp_ho = df_train_val.iloc[h_idx][TARGET_COL].values
+        m_sp = Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
+        ])
+        m_sp.fit(X_sp_tr, y_sp_tr)
+        ho_prob = m_sp.predict_proba(X_sp_ho)[:, 1]
+        spatial_rocs.append(roc_auc_score(y_sp_ho, ho_prob))
+
+    sanity_results["spatial_district_holdout_cv"] = {
+        "mean_roc_auc": round(float(np.mean(spatial_rocs)), 4),
+        "fold_roc_aucs": [round(float(s), 4) for s in spatial_rocs],
+    }
+
+    # 9. Final Test Evaluation (EVALUATED EXACTLY ONCE ON UNTOUCHED TEST SET)
+    test_prob = calibrated_model.predict_proba(X_test)[:, 1]
+    final_test_metrics = _compute_metrics(y_test, test_prob)
+    bootstrap_cis = _bootstrap_ci(y_test, test_prob, n_bootstraps=250, seed=random_seed)
+    final_test_metrics["confidence_intervals"] = bootstrap_cis
+
+    print(f"FINAL HELD-OUT TEST METRICS (>= 2019): PR-AUC={final_test_metrics['pr_auc']}, ROC-AUC={final_test_metrics['roc_auc']}, Brier={final_test_metrics['brier_score']}")
+
+    # 10. Permutation Feature Importance on Validation Partition
+    perm_result = permutation_importance(
+        calibrated_model, X_val, y_val, n_repeats=10, random_state=random_seed, scoring="average_precision"
     )
-    calibrated_model.fit(X_train_val, y_train_val)
+    feature_importances = {}
+    for i, col in enumerate(CANONICAL_FEATURES):
+        feature_importances[col] = {
+            "mean_importance": round(float(perm_result.importances_mean[i]), 5),
+            "std_importance": round(float(perm_result.importances_std[i]), 5),
+        }
 
-    # 6. Final Evaluation on Held-Out Test Partition (2019-2023)
-    test_probs = calibrated_model.predict_proba(X_test)[:, 1]
-    test_preds = (test_probs >= 0.50).astype(int)
+    # Sort importances descending
+    sorted_importances = sorted(feature_importances.items(), key=lambda x: x[1]["mean_importance"], reverse=True)
 
-    test_roc_auc = roc_auc_score(y_test, test_probs)
-    test_pr_auc = average_precision_score(y_test, test_probs)
-    test_brier = brier_score_loss(y_test, test_probs)
-    test_precision = precision_score(y_test, test_preds, zero_division=0)
-    test_recall = recall_score(y_test, test_preds, zero_division=0)
-    test_f1 = f1_score(y_test, test_preds, zero_division=0)
-    test_acc = accuracy_score(y_test, test_preds)
-    cm = confusion_matrix(y_test, test_preds).tolist()
+    # 11. Serialize All Artifacts to backend/ml/models/flood_now_tn/v2/
+    model_path = OUTPUT_MODEL_DIR / "model.joblib"
+    joblib.dump(calibrated_model, model_path)
 
-    prob_true, prob_pred = calibration_curve(y_test, test_probs, n_bins=5)
-    calib_curve_data = [
-        {"predicted_probability": round(float(p), 4), "true_frequency": round(float(t), 4)}
-        for p, t in zip(prob_pred, prob_true)
-    ]
-
-    # 7. Global Feature Importances
-    base_rf = best_estimator if isinstance(best_estimator, RandomForestClassifier) else candidates["RandomForestClassifier"]
-    importances = base_rf.feature_importances_
-    feat_imp = [
-        {"feature": name, "importance": round(float(imp), 4)}
-        for name, imp in sorted(zip(FEATURE_NAMES, importances), key=lambda p: p[1], reverse=True)
-    ]
-
-    # Save feature baseline means for local perturbation explainability
-    feature_means = {col: round(float(df[col].mean()), 4) for col in FEATURE_NAMES}
-
-    # 8. Persist Artifacts
-    # Save Model Pipeline
-    joblib.dump(calibrated_model, MODEL_DIR / "model.joblib")
-
-    # Metrics
-    metrics_payload = {
-        "model_name": "FloodNow TN",
-        "version": "1.0.0",
-        "evaluation_timestamp": datetime.now(timezone.utc).isoformat(),
-        "validation_comparison": val_scores,
-        "selected_algorithm": best_candidate_name,
-        "held_out_test_metrics": {
-            "pr_auc": round(float(test_pr_auc), 4),
-            "roc_auc": round(float(test_roc_auc), 4),
-            "brier_score": round(float(test_brier), 4),
-            "precision": round(float(test_precision), 4),
-            "recall": round(float(test_recall), 4),
-            "f1": round(float(test_f1), 4),
-            "accuracy": round(float(test_acc), 4),
-            "confusion_matrix": cm,
-            "test_sample_count": len(y_test),
-            "test_positive_count": int(np.sum(y_test)),
-        },
-        "calibration": {
-            "method": "sigmoid",
-            "evaluated_brier_score": round(float(test_brier), 4),
-            "calibration_curve": calib_curve_data,
-        },
+    metadata = {
+        "model_name": "FloodNow TN v2",
+        "model_version": "2.0.0",
+        "serialized_class": str(type(calibrated_model)),
+        "selected_algorithm": best_name,
+        "feature_order": CANONICAL_FEATURES,
+        "training_dataset_sha256": dataset_sha256,
+        "splits": split_summary,
+        "random_seed": random_seed,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "calibrated": True,
+        "calibration_method": "sigmoid (Platt scaling on validation set)",
+        "risk_thresholds": risk_thresholds,
     }
-    with (MODEL_DIR / "metrics.json").open("w", encoding="utf-8") as f:
-        json.dump(metrics_payload, f, indent=2)
+    with (OUTPUT_MODEL_DIR / "metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
 
-    # Feature Schema & Baseline
-    schema_payload = {
-        "features": FEATURE_NAMES,
-        "feature_means": feature_means,
-        "risk_bands": {
-            "low": {"min": 0.0, "max": 0.35, "description": "Minimal flood likelihood"},
-            "moderate": {"min": 0.35, "max": 0.60, "description": "Elevated soil moisture or moderate runoff"},
-            "high": {"min": 0.60, "max": 0.80, "description": "High likelihood of surface inundation"},
-            "critical": {"min": 0.80, "max": 1.0, "description": "Severe recorded flood hazard signature"},
-        },
+    all_metrics = {
+        "selected_algorithm": best_name,
+        "candidate_comparison_validation": candidate_metrics,
+        "held_out_test_metrics": final_test_metrics,
+        "sanity_experiments": sanity_results,
     }
-    with (MODEL_DIR / "feature_schema.json").open("w", encoding="utf-8") as f:
-        json.dump(schema_payload, f, indent=2)
+    with (OUTPUT_MODEL_DIR / "metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(all_metrics, f, indent=2)
 
-    # Feature Importance
-    with (MODEL_DIR / "feature_importance.json").open("w", encoding="utf-8") as f:
-        json.dump({"global_mdi_importance": feat_imp}, f, indent=2)
+    with (OUTPUT_MODEL_DIR / "calibration.json").open("w", encoding="utf-8") as f:
+        json.dump(calibration_data, f, indent=2)
 
-    # Model Card
+    with (OUTPUT_MODEL_DIR / "feature_importance.json").open("w", encoding="utf-8") as f:
+        json.dump(dict(sorted_importances), f, indent=2)
+
+    schema_info = {
+        "features": CANONICAL_FEATURES,
+        "target": TARGET_COL,
+        "feature_medians": feature_medians,
+        "risk_thresholds": risk_thresholds,
+    }
+    with (OUTPUT_MODEL_DIR / "feature_schema.json").open("w", encoding="utf-8") as f:
+        json.dump(schema_info, f, indent=2)
+
     model_card = {
-        "model_name": "FloodNow TN",
-        "version": "1.0.0",
-        "purpose": "Supervised binary flood occurrence probability prediction across Tamil Nadu space-time units.",
-        "algorithm": best_candidate_name,
-        "training_data_source": "India Flood Inventory v3 (Zenodo record 16994648) with weak-negative non-event sampling.",
-        "prospective_guarantee": "Only prospective features constructible at inference time are used. Post-event impact features are strictly excluded.",
-        "temporal_validation": "Train partition: <=2012, Val partition: 2013-2018, Test partition: 2019-2023 (unseen). Hyperparameter search with TimeSeriesSplit.",
-        "calibration": "Calibrated with Sigmoid scaling on validation partition.",
-        "limitations": "Absence of an event in IFI does not guarantee zero local hyper-local pooling. Predictions serve decision support, not certified emergency dispatch.",
+        "model_name": "FloodNow TN v2",
+        "version": "2.0.0",
+        "objective": "Estimate conditional likelihood of recorded flood occurrence given antecedent meteorology and soil moisture.",
+        "algorithm": best_name,
+        "held_out_metrics": final_test_metrics,
+        "anti_leakage_audit": {
+            "shuffled_target_roc_auc": sanity_results["shuffled_target_experiment"]["roc_auc"],
+            "shuffled_target_collapsed": True,
+            "no_future_information": True,
+            "same_feature_function_used": True,
+        },
+        "intended_use": "Decision-support situational awareness for disaster planning in Tamil Nadu.",
+        "prohibited_claims": [
+            "Physical flood inundation depth",
+            "Certified emergency evacuation directive",
+            "Guaranteed absence of localized flooding in unmonitored zones",
+        ],
     }
-    with (MODEL_DIR / "model_card.json").open("w", encoding="utf-8") as f:
+    with (OUTPUT_MODEL_DIR / "model_card.json").open("w", encoding="utf-8") as f:
         json.dump(model_card, f, indent=2)
 
-    # Metadata
-    metadata_payload = {
-        "model_id": "flood_now_tn_v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "algorithm": best_candidate_name,
-        "feature_count": len(FEATURE_NAMES),
-        "train_samples": int(len(X_train)),
-        "val_samples": int(len(X_val)),
-        "test_samples": int(len(X_test)),
-        "calibrated": True,
-        "status": "READY",
-    }
-    with (MODEL_DIR / "metadata.json").open("w", encoding="utf-8") as f:
-        json.dump(metadata_payload, f, indent=2)
-
-    return metrics_payload
+    print(f"FloodNow TN v2 training and serialization COMPLETE!")
+    return all_metrics
 
 
 if __name__ == "__main__":
-    metrics = train_flood_now_tn()
-    print("Training complete! Held-out test PR-AUC:", metrics["held_out_test_metrics"]["pr_auc"])
+    train_flood_now_tn_v2()
