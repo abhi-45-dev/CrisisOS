@@ -4,8 +4,6 @@
   "serialized_class": "<class 'sklearn.calibration.CalibratedClassifierCV'>",
   "selected_algorithm": "RandomForestClassifier",
   "feature_order": [
-    "latitude",
-    "longitude",
     "month_sin",
     "month_cos",
     "rain_1h_mm",
@@ -44,7 +42,17 @@
     }
   },
   "random_seed": 42,
-  "created_at": "2026-09-12T23:27:06.810821+00:00",
+  "created_at": "2026-09-12T23:43:18.570262+00:00",
+  "git_commit_sha": "766fe5e81543be0a882fb43780c50aeb74f5ef05",
+  "dependencies": {
+    "python": "3.12.4",
+    "scikit-learn": "1.9.1",
+    "pandas": "2.3.3",
+    "numpy": "2.1.1",
+    "joblib": "1.6.0",
+    "pyarrow": "24.0.0"
+  },
+  "bootstrap_iterations": 1000,
   "calibrated": true,
   "calibration_method": "sigmoid (Platt scaling on validation set)",
   "risk_thresholds": {

@@ -1,7 +1,5 @@
 {
   "features": [
-    "latitude",
-    "longitude",
     "month_sin",
     "month_cos",
     "rain_1h_mm",
@@ -14,8 +12,6 @@
   ],
   "target": "target",
   "feature_medians": {
-    "latitude": 11.1085,
-    "longitude": 78.8395,
     "month_sin": -0.5,
     "month_cos": 0.5,
     "rain_1h_mm": 0.0,
@@ -27,8 +23,8 @@
     "soil_moisture_7_28cm": 0.26
   },
   "risk_thresholds": {
-    "moderate": 0.275,
-    "high": 0.835,
-    "critical": 0.878
+    "moderate": 0.35,
+    "high": 0.55,
+    "critical": 0.75
   }
 }

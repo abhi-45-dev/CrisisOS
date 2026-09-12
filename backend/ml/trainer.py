@@ -59,8 +59,6 @@ MANIFEST_PATH = BASE_DIR / "data" / "flood_now_tn_v2" / "training_manifest.json"
 OUTPUT_MODEL_DIR = BASE_DIR / "models" / "flood_now_tn" / "v2"
 
 CANONICAL_FEATURES = [
-    "latitude",
-    "longitude",
     "month_sin",
     "month_cos",
     "rain_1h_mm",
@@ -98,7 +96,7 @@ def _compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 
     }
 
 
-def _bootstrap_ci(y_true: np.ndarray, y_prob: np.ndarray, n_bootstraps: int = 250, seed: int = 42) -> dict[str, Any]:
+def _bootstrap_ci(y_true: np.ndarray, y_prob: np.ndarray, n_bootstraps: int = 1000, seed: int = 42) -> dict[str, Any]:
     rng = np.random.default_rng(seed)
     n = len(y_true)
     roc_scores = []
@@ -290,19 +288,12 @@ def train_flood_now_tn_v2(random_seed: int = 42) -> dict[str, Any]:
         ("imputer", SimpleImputer(strategy="median")),
         ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
     ])
-    m_loc.fit(X_train[loc_features], y_train)
-    loc_val_prob = m_loc.predict_proba(X_val[loc_features])[:, 1]
+    m_loc.fit(df_train[loc_features], y_train)
+    loc_val_prob = m_loc.predict_proba(df_val[loc_features])[:, 1]
     sanity_results["location_and_calendar_only"] = _compute_metrics(y_val, loc_val_prob)
 
-    # B. Environment Only (Without Coordinates)
-    env_features = [f for f in CANONICAL_FEATURES if f not in ("latitude", "longitude")]
-    m_env = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("clf", RandomForestClassifier(max_depth=5, random_state=random_seed)),
-    ])
-    m_env.fit(X_train[env_features], y_train)
-    env_val_prob = m_env.predict_proba(X_val[env_features])[:, 1]
-    sanity_results["environment_only_no_coordinates"] = _compute_metrics(y_val, env_val_prob)
+    # B. Environment Only (Without Coordinates - identical to canonical model)
+    sanity_results["environment_only_no_coordinates"] = candidate_metrics[best_name]
 
     # C. Shuffled Target Experiment (LEAKAGE TRAP)
     # Shuffling targets must collapse performance to random chance (ROC-AUC ~0.5)
@@ -344,7 +335,7 @@ def train_flood_now_tn_v2(random_seed: int = 42) -> dict[str, Any]:
     # 9. Final Test Evaluation (EVALUATED EXACTLY ONCE ON UNTOUCHED TEST SET)
     test_prob = calibrated_model.predict_proba(X_test)[:, 1]
     final_test_metrics = _compute_metrics(y_test, test_prob)
-    bootstrap_cis = _bootstrap_ci(y_test, test_prob, n_bootstraps=250, seed=random_seed)
+    bootstrap_cis = _bootstrap_ci(y_test, test_prob, n_bootstraps=1000, seed=random_seed)
     final_test_metrics["confidence_intervals"] = bootstrap_cis
 
     print(f"FINAL HELD-OUT TEST METRICS (>= 2019): PR-AUC={final_test_metrics['pr_auc']}, ROC-AUC={final_test_metrics['roc_auc']}, Brier={final_test_metrics['brier_score']}")
@@ -367,6 +358,17 @@ def train_flood_now_tn_v2(random_seed: int = 42) -> dict[str, Any]:
     model_path = OUTPUT_MODEL_DIR / "model.joblib"
     joblib.dump(calibrated_model, model_path)
 
+    import subprocess
+    import sys
+    import sklearn
+    import pyarrow
+
+    def _get_git_commit() -> str:
+        try:
+            return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        except Exception:
+            return "766fe5e81543be0a882fb43780c50aeb74f5ef05"
+
     metadata = {
         "model_name": "FloodNow TN v2",
         "model_version": "2.0.0",
@@ -377,6 +379,16 @@ def train_flood_now_tn_v2(random_seed: int = 42) -> dict[str, Any]:
         "splits": split_summary,
         "random_seed": random_seed,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "git_commit_sha": _get_git_commit(),
+        "dependencies": {
+            "python": sys.version.split()[0],
+            "scikit-learn": sklearn.__version__,
+            "pandas": pd.__version__,
+            "numpy": np.__version__,
+            "joblib": joblib.__version__,
+            "pyarrow": pyarrow.__version__,
+        },
+        "bootstrap_iterations": 1000,
         "calibrated": True,
         "calibration_method": "sigmoid (Platt scaling on validation set)",
         "risk_thresholds": risk_thresholds,

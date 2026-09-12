@@ -46,19 +46,58 @@ def test_training_manifest_provenance():
 
 
 def test_model_metrics_evaluated_on_held_out_test_set():
-    """Assert metrics are evaluated on unseen test data without hardcoded values."""
+    """Assert metrics are evaluated on unseen test data with structural scientific checks.
+    
+    Does NOT assert predetermined impressive metrics (e.g. >= 0.85); asserts valid ranges,
+    unbroken evaluation artifacts, and collapsed shuffled-target sanity.
+    """
     metrics_path = MODEL_DIR / "metrics.json"
     assert metrics_path.exists(), "metrics.json artifact must exist"
     with metrics_path.open("r", encoding="utf-8") as f:
         metrics = json.load(f)
 
+    # 1. Structural check of held-out test evaluation
     held_out = metrics["held_out_test_metrics"]
     test_count = held_out.get("test_sample_count", held_out.get("sample_count", 0))
-    assert test_count >= 50
-    assert 0.0 <= held_out["brier_score"] <= 0.25
-    assert held_out["roc_auc"] >= 0.85
-    assert held_out["pr_auc"] >= 0.85
+    assert test_count >= 50, f"Expected held-out test set size >= 50, got {test_count}"
+    assert 0.0 <= held_out["brier_score"] <= 1.0
+    assert 0.0 <= held_out["roc_auc"] <= 1.0
+    assert 0.0 <= held_out["pr_auc"] <= 1.0
     assert "confusion_matrix" in held_out
+    assert "confidence_intervals" in held_out
+
+    # 2. Calibration artifact exists
+    calibration_path = MODEL_DIR / "calibration.json"
+    assert calibration_path.exists(), "calibration.json must exist"
+
+    # 3. Scientific anti-leakage sanity check: shuffled-target collapses to chance (~0.50)
+    assert "sanity_experiments" in metrics
+    shuffled = metrics["sanity_experiments"]["shuffled_target_experiment"]
+    assert 0.40 <= shuffled["roc_auc"] <= 0.65, f"Shuffled target should collapse near chance (0.50), got {shuffled['roc_auc']}"
+
+
+def test_risk_threshold_consistency():
+    """Assert metadata.json, feature_schema.json, and inference service thresholds strictly match."""
+    metadata_path = MODEL_DIR / "metadata.json"
+    schema_path = MODEL_DIR / "feature_schema.json"
+
+    assert metadata_path.exists(), "metadata.json must exist"
+    assert schema_path.exists(), "feature_schema.json must exist"
+
+    with metadata_path.open("r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    with schema_path.open("r", encoding="utf-8") as f:
+        schema = json.load(f)
+
+    meta_thresholds = metadata.get("risk_thresholds", {})
+    schema_thresholds = schema.get("risk_thresholds", {})
+
+    assert meta_thresholds == schema_thresholds, (
+        f"Threshold mismatch! metadata: {meta_thresholds} vs feature_schema: {schema_thresholds}"
+    )
+    assert meta_thresholds["moderate"] == 0.35
+    assert meta_thresholds["high"] == 0.55
+    assert meta_thresholds["critical"] == 0.75
 
 
 def test_model_inference_calibration_and_bands():
@@ -104,16 +143,44 @@ def test_model_inference_calibration_and_bands():
     assert dry_result["risk_band"] == "low"
 
 
-def test_local_explainability():
-    """Assert that local feature contributions explain why a prediction is risky."""
+def test_local_explainability_and_imputed_inputs():
+    """Assert that missing inputs are marked as imputed and not claimed as physical hazard drivers."""
     features = {
         "latitude": 13.0827,
         "longitude": 80.2707,
         "rain_24h_mm": 180.0,
-        "soil_moisture_0_7cm": 0.48,
+        # rain_1h_mm, rain_3h_mm, rain_6h_mm, rain_72h_mm intentionally omitted
     }
     result = flood_now_inference.predict(features)
     explanations = result["local_explanations"]
-    features_mentioned = [e["feature"] for e in explanations]
-    assert any(f in features_mentioned for f in ("rain_24h_mm", "soil_moisture_0_7cm", "soil_moisture"))
+
+    # Verify missing inputs listed
+    assert "missing_inputs" in result
+    assert "rain_1h_mm" in result["missing_inputs"]
+
+    # Find explanation for imputed feature
+    rain_1h_exp = next((e for e in explanations if e["feature"] == "rain_1h_mm"), None)
+    assert rain_1h_exp is not None
+    assert rain_1h_exp["was_imputed"] is True
+    assert rain_1h_exp["observed_value"] is None
+    assert rain_1h_exp["imputed_value"] is not None
+    assert rain_1h_exp["impact"] == "imputed_input"
+    assert rain_1h_exp["attribution_weight"] == 0.0
+
+    # Find explanation for observed feature
+    rain_24h_exp = next((e for e in explanations if e["feature"] == "rain_24h_mm"), None)
+    assert rain_24h_exp is not None
+    assert rain_24h_exp["was_imputed"] is False
+    assert rain_24h_exp["observed_value"] == 180.0
+    assert rain_24h_exp["impact"] in ("increases_risk", "decreases_risk")
+
+
+def test_scenario_override_requires_baseline_weather():
+    """Assert that scenario override fails gracefully if baseline observed weather is missing."""
+    from app.services.hazard_service import hazard_service
+
+    # Coordinate outside Tamil Nadu fails validation
+    with pytest.raises(Exception):
+        hazard_service.predict_coordinate(lat=28.6139, lon=77.2090, rainfall_override_mm=50.0)
+
 

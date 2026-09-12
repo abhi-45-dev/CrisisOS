@@ -1,46 +1,38 @@
 {
   "month_cos": {
-    "mean_importance": 0.11009,
-    "std_importance": 0.01446
-  },
-  "rain_24h_mm": {
-    "mean_importance": 0.05164,
-    "std_importance": 0.00594
+    "mean_importance": 0.10927,
+    "std_importance": 0.01449
   },
   "rain_72h_mm": {
-    "mean_importance": 0.04026,
-    "std_importance": 0.00719
+    "mean_importance": 0.03556,
+    "std_importance": 0.00797
+  },
+  "rain_24h_mm": {
+    "mean_importance": 0.0306,
+    "std_importance": 0.00633
   },
   "soil_moisture_0_7cm": {
-    "mean_importance": 0.02747,
-    "std_importance": 0.00555
+    "mean_importance": 0.02258,
+    "std_importance": 0.00411
   },
   "rain_6h_mm": {
-    "mean_importance": 0.0229,
-    "std_importance": 0.00601
+    "mean_importance": 0.01929,
+    "std_importance": 0.00489
   },
   "month_sin": {
-    "mean_importance": 0.02219,
-    "std_importance": 0.00657
+    "mean_importance": 0.01927,
+    "std_importance": 0.00611
   },
   "soil_moisture_7_28cm": {
-    "mean_importance": 0.02149,
-    "std_importance": 0.00426
-  },
-  "rain_1h_mm": {
-    "mean_importance": 0.0032,
-    "std_importance": 0.00169
-  },
-  "longitude": {
-    "mean_importance": 0.00313,
-    "std_importance": 0.00213
+    "mean_importance": 0.01533,
+    "std_importance": 0.00457
   },
   "rain_3h_mm": {
-    "mean_importance": 0.00259,
-    "std_importance": 0.0016
+    "mean_importance": 0.00102,
+    "std_importance": 0.00109
   },
-  "latitude": {
-    "mean_importance": -0.00104,
-    "std_importance": 0.00166
+  "rain_1h_mm": {
+    "mean_importance": 0.0004,
+    "std_importance": 0.00172
   }
 }

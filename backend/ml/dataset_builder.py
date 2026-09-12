@@ -403,9 +403,16 @@ def build_training_dataset_v2(
             "md5": ifi_md5,
             "sha256": ifi_sha256,
             "raw_tn_records": len(df_tn),
+            "raw_tn_ifi_events": len(df_tn),
+            "district_event_observations": len(pos_df),
+            "observation_notes": "188 raw Tamil Nadu multi-district event records in IFI v3 expand into 717 district-event observations across 38 districts.",
             "accepted_positives": len(pos_df),
             "rejected_positives_count": len(rejected_positives),
             "rejected_positives_sample": rejected_positives[:10],
+        },
+        "district_centroids_provenance": {
+            "source": "OpenStreetMap / Survey of India District Administrative Headquarter and Geographic Centroids for 38 Tamil Nadu Revenue Districts",
+            "role_in_system": "Transparent spatial lookup metadata used exclusively to query ERA5 historical reanalysis and live Open-Meteo weather. Latitude and longitude are excluded from predictive model features to eliminate coordinate memorization and ensure purely physical/environmental hazard inference."
         },
         "environmental_source": {
             "provider": "Open-Meteo Historical Archive API (ERA5 / ERA5-Land Reanalysis)",

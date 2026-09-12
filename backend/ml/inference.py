@@ -26,8 +26,6 @@ V2_MODEL_DIR = Path(__file__).resolve().parent / "models" / "flood_now_tn" / "v2
 V1_MODEL_DIR = Path(__file__).resolve().parent / "models" / "flood_now_tn" / "v1"
 
 CANONICAL_FEATURES = [
-    "latitude",
-    "longitude",
     "month_sin",
     "month_cos",
     "rain_1h_mm",
@@ -38,6 +36,12 @@ CANONICAL_FEATURES = [
     "soil_moisture_0_7cm",
     "soil_moisture_7_28cm",
 ]
+
+DEFAULT_RISK_THRESHOLDS = {
+    "moderate": 0.35,
+    "high": 0.55,
+    "critical": 0.75,
+}
 
 
 class ModelNotTrainedError(HTTPException):
@@ -147,21 +151,23 @@ class FloodNowTNInferenceService:
             # Retain None so the trained pipeline's SimpleImputer handles missing values
             input_data[col] = [val if val is not None else np.nan]
 
+        missing_inputs = [col for col in CANONICAL_FEATURES if clean_features.get(col) is None]
+
         X = pd.DataFrame(input_data, columns=CANONICAL_FEATURES)
         prob = float(self._model.predict_proba(X)[0, 1])
 
-        # Assign risk bands based on metadata thresholds
-        thresholds = self._metadata.get("risk_thresholds", {"moderate": 0.35, "high": 0.60, "critical": 0.80})
-        if prob >= thresholds.get("critical", 0.80):
+        # Assign risk bands based on metadata thresholds (defaulting to 0.35, 0.55, 0.75)
+        thresholds = self._metadata.get("risk_thresholds", DEFAULT_RISK_THRESHOLDS)
+        if prob >= thresholds.get("critical", 0.75):
             band = "critical"
-        elif prob >= thresholds.get("high", 0.60):
+        elif prob >= thresholds.get("high", 0.55):
             band = "high"
         elif prob >= thresholds.get("moderate", 0.35):
             band = "moderate"
         else:
             band = "low"
 
-        # Compute genuine local explanations from estimator
+        # Compute uncalibrated tree-path local contributions
         local_explanations = self._compute_local_explanations(X, clean_features)
 
         return {
@@ -169,12 +175,22 @@ class FloodNowTNInferenceService:
             "risk_band": band,
             "calibrated": True,
             "model_version": f"FloodNow TN v{self._version}",
+            "explanation_method": "tree_decision_path_contributions (uncalibrated base estimator)",
             "inference_timestamp": datetime.now(timezone.utc).isoformat(),
+            "missing_inputs": missing_inputs,
             "local_explanations": local_explanations,
         }
 
+    @property
+    def canonical_features(self) -> list[str]:
+        return list(CANONICAL_FEATURES)
+
     def _compute_local_explanations(self, X: pd.DataFrame, clean_features: dict[str, Any]) -> list[dict[str, Any]]:
-        """Extract mathematically sound feature attributions directly from the trained estimator."""
+        """Extract uncalibrated tree decision-path feature contributions truthfully.
+        
+        Missing inputs are explicitly marked as imputed and excluded from physical
+        hazard attribution claims.
+        """
         medians = self._schema.get("feature_medians", {})
         explanations = []
 
@@ -220,16 +236,35 @@ class FloodNowTNInferenceService:
                     observed = clean_features.get(feat_name)
                     med = medians.get(feat_name, 0.0)
                     is_risk = weight > 0
-                    explanations.append({
-                        "feature": feat_name,
-                        "attribution_weight": round(weight, 4),
-                        "importance_weight": round(abs(weight), 4),
-                        "observed_value": observed,
-                        "value": observed if observed is not None else med,
-                        "baseline_mean": med,
-                        "impact": "increases_risk" if is_risk else "decreases_risk",
-                        "direction": "increases_risk" if is_risk else "decreases_risk",
-                    })
+                    was_imputed = observed is None
+                    imputed_val = round(float(X_imputed[0, idx]), 4)
+
+                    if was_imputed:
+                        explanations.append({
+                            "feature": feat_name,
+                            "attribution_weight": 0.0,
+                            "importance_weight": 0.0,
+                            "observed_value": None,
+                            "imputed_value": imputed_val,
+                            "value": imputed_val,
+                            "baseline_mean": med,
+                            "was_imputed": True,
+                            "impact": "imputed_input",
+                            "direction": "imputed_input",
+                        })
+                    else:
+                        explanations.append({
+                            "feature": feat_name,
+                            "attribution_weight": round(weight, 4),
+                            "importance_weight": round(abs(weight), 4),
+                            "observed_value": observed,
+                            "imputed_value": None,
+                            "value": observed,
+                            "baseline_mean": med,
+                            "was_imputed": False,
+                            "impact": "increases_risk" if is_risk else "decreases_risk",
+                            "direction": "increases_risk" if is_risk else "decreases_risk",
+                        })
 
             # Case B: LogisticRegression - linear contribution w_j * (x_j - mu_j)
             elif hasattr(clf, "coef_"):
@@ -239,16 +274,36 @@ class FloodNowTNInferenceService:
                     med = medians.get(feat_name, 0.0)
                     weight = float(weights[idx] * (val - med))
                     is_risk = weight > 0
-                    explanations.append({
-                        "feature": feat_name,
-                        "attribution_weight": round(weight, 4),
-                        "importance_weight": round(abs(weight), 4),
-                        "observed_value": clean_features.get(feat_name),
-                        "value": val,
-                        "baseline_mean": med,
-                        "impact": "increases_risk" if is_risk else "decreases_risk",
-                        "direction": "increases_risk" if is_risk else "decreases_risk",
-                    })
+                    observed = clean_features.get(feat_name)
+                    was_imputed = observed is None
+                    imputed_val = round(val, 4)
+
+                    if was_imputed:
+                        explanations.append({
+                            "feature": feat_name,
+                            "attribution_weight": 0.0,
+                            "importance_weight": 0.0,
+                            "observed_value": None,
+                            "imputed_value": imputed_val,
+                            "value": imputed_val,
+                            "baseline_mean": med,
+                            "was_imputed": True,
+                            "impact": "imputed_input",
+                            "direction": "imputed_input",
+                        })
+                    else:
+                        explanations.append({
+                            "feature": feat_name,
+                            "attribution_weight": round(weight, 4),
+                            "importance_weight": round(abs(weight), 4),
+                            "observed_value": observed,
+                            "imputed_value": None,
+                            "value": observed,
+                            "baseline_mean": med,
+                            "was_imputed": False,
+                            "impact": "increases_risk" if is_risk else "decreases_risk",
+                            "direction": "increases_risk" if is_risk else "decreases_risk",
+                        })
 
         except Exception as exc:
             # If explanation fails, return empty list rather than faking
