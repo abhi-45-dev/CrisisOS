@@ -86,9 +86,9 @@ export default function App() {
 
         if (evData) setEvidence(evData);
         if (gridData) setHazardGrid(gridData);
-        setHospitals(hosps || []);
-        setShelters(shlts || []);
-        setIncidents(incs || []);
+        setHospitals(Array.isArray(hosps) ? hosps : []);
+        setShelters(Array.isArray(shlts) ? shlts : []);
+        setIncidents(Array.isArray(incs) ? incs : []);
       } catch (err: any) {
         setError(err?.message || "Failed to initialize DisasterPulse TN platform");
       } finally {
@@ -387,14 +387,21 @@ export default function App() {
                     <div>
                       <div className="text-gray-400 text-[11px] mb-2 font-semibold">Local Feature Importance:</div>
                       <div className="space-y-1.5">
-                        {coordPrediction.local_explanations.slice(0, 4).map((exp, idx) => (
-                          <div key={idx} className="flex justify-between items-center text-[11px] bg-black/20 p-1.5 rounded">
-                            <span className="text-gray-300">• {exp.feature} ({exp.value.toFixed(1)})</span>
-                            <span className={exp.direction === "increases_risk" ? "text-red-400" : "text-emerald-400"}>
-                              {exp.direction === "increases_risk" ? "▲ Increases Risk" : "▼ Decreases Risk"}
-                            </span>
-                          </div>
-                        ))}
+                        {(Array.isArray(coordPrediction.local_explanations) ? coordPrediction.local_explanations : [])
+                          .slice(0, 4)
+                          .map((exp, idx) => {
+                            const rawVal = exp.value ?? exp.observed_value;
+                            const valStr = typeof rawVal === "number" ? rawVal.toFixed(1) : "-";
+                            const isRisk = exp.direction === "increases_risk" || exp.impact === "increases_risk";
+                            return (
+                              <div key={idx} className="flex justify-between items-center text-[11px] bg-black/20 p-1.5 rounded">
+                                <span className="text-gray-300">• {exp.feature} ({valStr})</span>
+                                <span className={isRisk ? "text-red-400" : "text-emerald-400"}>
+                                  {isRisk ? "▲ Increases Risk" : "▼ Decreases Risk"}
+                                </span>
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                   </div>
@@ -463,23 +470,27 @@ export default function App() {
                       </div>
 
                       <div className="grid grid-cols-2 gap-3">
-                        <div className="p-3 bg-blue-950/20 border border-blue-500/20 rounded">
-                          <div className="font-bold text-blue-400 uppercase text-[10px]">FASTEST ROUTE</div>
-                          <div className="text-lg font-bold mt-1">{routeResult.fastest.total_distance_km.toFixed(1)} km</div>
-                          <div className="text-gray-400 text-[10px] mt-0.5">Est: {routeResult.fastest.baseline_network_duration_min.toFixed(0)} min</div>
-                          <div className="mt-2 text-[10px] text-orange-400">
-                            High Risk: {routeResult.fastest.high_risk_distance_km.toFixed(1)} km
+                        {routeResult.fastest ? (
+                          <div className="p-3 bg-blue-950/20 border border-blue-500/20 rounded">
+                            <div className="font-bold text-blue-400 uppercase text-[10px]">FASTEST ROUTE</div>
+                            <div className="text-lg font-bold mt-1">{(routeResult.fastest.total_distance_km ?? 0).toFixed(1)} km</div>
+                            <div className="text-gray-400 text-[10px] mt-0.5">Est: {(routeResult.fastest.baseline_network_duration_min ?? 0).toFixed(0)} min</div>
+                            <div className="mt-2 text-[10px] text-orange-400">
+                              High Risk: {(routeResult.fastest.high_risk_distance_km ?? 0).toFixed(1)} km
+                            </div>
                           </div>
-                        </div>
+                        ) : null}
 
-                        <div className="p-3 bg-teal-950/20 border border-[#72cfc5]/30 rounded">
-                          <div className="font-bold text-[#72cfc5] uppercase text-[10px]">SAFEST ROUTE</div>
-                          <div className="text-lg font-bold mt-1">{routeResult.safest.total_distance_km.toFixed(1)} km</div>
-                          <div className="text-gray-400 text-[10px] mt-0.5">Est: {routeResult.safest.baseline_network_duration_min.toFixed(0)} min</div>
-                          <div className="mt-2 text-[10px] text-emerald-400">
-                            Critical Risk: {routeResult.safest.critical_risk_distance_km.toFixed(1)} km
+                        {routeResult.safest ? (
+                          <div className="p-3 bg-teal-950/20 border border-[#72cfc5]/30 rounded">
+                            <div className="font-bold text-[#72cfc5] uppercase text-[10px]">SAFEST ROUTE</div>
+                            <div className="text-lg font-bold mt-1">{(routeResult.safest.total_distance_km ?? 0).toFixed(1)} km</div>
+                            <div className="text-gray-400 text-[10px] mt-0.5">Est: {(routeResult.safest.baseline_network_duration_min ?? 0).toFixed(0)} min</div>
+                            <div className="mt-2 text-[10px] text-emerald-400">
+                              Critical Risk: {(routeResult.safest.critical_risk_distance_km ?? 0).toFixed(1)} km
+                            </div>
                           </div>
-                        </div>
+                        ) : null}
                       </div>
                     </div>
                   )}
@@ -640,25 +651,25 @@ export default function App() {
                       <div className="bg-black/30 p-2.5 rounded border border-white/5">
                         <div className="text-gray-400 text-[10px]">Travel Distance</div>
                         <div className="text-lg font-bold text-white mt-0.5">
-                          {survivorRec.recommended_route.total_distance_km.toFixed(1)} km
+                          {(survivorRec.recommended_route.total_distance_km ?? 0).toFixed(1)} km
                         </div>
                       </div>
                       <div className="bg-black/30 p-2.5 rounded border border-white/5">
                         <div className="text-gray-400 text-[10px]">Est. Duration</div>
                         <div className="text-lg font-bold text-white mt-0.5">
-                          {survivorRec.recommended_route.baseline_network_duration_min.toFixed(0)} min
+                          {(survivorRec.recommended_route.baseline_network_duration_min ?? 0).toFixed(0)} min
                         </div>
                       </div>
                       <div className="bg-black/30 p-2.5 rounded border border-white/5">
                         <div className="text-gray-400 text-[10px]">Critical Exposure</div>
                         <div className="text-lg font-bold text-emerald-400 mt-0.5">
-                          {survivorRec.recommended_route.critical_risk_distance_km.toFixed(1)} km
+                          {(survivorRec.recommended_route.critical_risk_distance_km ?? 0).toFixed(1)} km
                         </div>
                       </div>
                       <div className="bg-black/30 p-2.5 rounded border border-white/5">
                         <div className="text-gray-400 text-[10px]">Route Verdict</div>
                         <div className="text-sm font-bold text-[#72cfc5] mt-1">
-                          {survivorRec.recommended_route.risk_verdict}
+                          {survivorRec.recommended_route.risk_verdict || "SAFE"}
                         </div>
                       </div>
                     </div>
@@ -880,15 +891,15 @@ export default function App() {
               {/* Feed of Incidents */}
               <div className="lg:col-span-2 space-y-3">
                 <div className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                  Live Reports Feed ({incidents.length} Records):
+                  Live Reports Feed ({(Array.isArray(incidents) ? incidents : []).length} Records):
                 </div>
 
-                {incidents.length === 0 ? (
+                {(Array.isArray(incidents) ? incidents : []).length === 0 ? (
                   <div className="p-8 text-center bg-[#0d1212] border border-white/10 rounded text-xs text-gray-500">
                     No active citizen incident reports. Use the form to submit one.
                   </div>
                 ) : (
-                  incidents.map((inc) => (
+                  (Array.isArray(incidents) ? incidents : []).map((inc) => (
                     <div key={inc.id} className="bg-[#0d1212] border border-white/10 p-4 rounded-lg space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
@@ -965,25 +976,25 @@ export default function App() {
                         <div className="bg-black/30 p-3 rounded border border-white/5">
                           <div className="text-gray-400 text-[10px]">PR-AUC</div>
                           <div className="text-xl font-bold font-mono text-white mt-0.5">
-                            {evidence.model.metrics.pr_auc.toFixed(4)}
+                            {(evidence.model.metrics.pr_auc ?? 0).toFixed(4)}
                           </div>
                         </div>
                         <div className="bg-black/30 p-3 rounded border border-white/5">
                           <div className="text-gray-400 text-[10px]">ROC-AUC</div>
                           <div className="text-xl font-bold font-mono text-white mt-0.5">
-                            {evidence.model.metrics.roc_auc.toFixed(4)}
+                            {(evidence.model.metrics.roc_auc ?? 0).toFixed(4)}
                           </div>
                         </div>
                         <div className="bg-black/30 p-3 rounded border border-white/5">
                           <div className="text-gray-400 text-[10px]">Brier Score</div>
                           <div className="text-xl font-bold font-mono text-[#72cfc5] mt-0.5">
-                            {evidence.model.metrics.brier_score.toFixed(4)}
+                            {(evidence.model.metrics.brier_score ?? 0).toFixed(4)}
                           </div>
                         </div>
                         <div className="bg-black/30 p-3 rounded border border-white/5">
                           <div className="text-gray-400 text-[10px]">Test Samples</div>
                           <div className="text-xl font-bold font-mono text-white mt-0.5">
-                            {evidence.model.metrics.test_samples}
+                            {evidence.model.metrics.test_samples ?? 0}
                           </div>
                         </div>
                       </div>
@@ -1036,7 +1047,7 @@ export default function App() {
                       </div>
 
                       <div className="p-2.5 bg-black/40 rounded border border-white/5 text-[10px] text-gray-400">
-                        <strong>Pre-Event Predictive Features:</strong> {evidence.model.training_manifest.features.join(", ")}
+                        <strong>Pre-Event Predictive Features:</strong> {Array.isArray(evidence.model.training_manifest.features) ? evidence.model.training_manifest.features.join(", ") : ""}
                       </div>
                     </div>
                   ) : (
@@ -1065,7 +1076,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                      {Object.entries(evidence.sources).map(([key, src]) => (
+                      {evidence.sources && Object.entries(evidence.sources).map(([key, src]) => (
                         <tr key={key} className="text-gray-300">
                           <td className="py-2.5 font-semibold text-white">{src.provider}</td>
                           <td className="py-2.5 text-gray-400">{src.dataset}</td>

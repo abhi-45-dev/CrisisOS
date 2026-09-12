@@ -146,14 +146,17 @@ export function LeafletCrisisMap({
     if (!L || !group) return;
 
     group.clearLayers();
-    if (!showHazard || !hazardGrid || !hazardGrid.features) return;
+    if (!showHazard || !hazardGrid) return;
+    const safeFeatures = Array.isArray(hazardGrid?.features) ? hazardGrid.features : [];
 
-    hazardGrid.features.forEach((feature) => {
+    safeFeatures.forEach((feature) => {
       const p = feature.properties;
-      const color = RISK_COLORS[p.risk_band] || "#10b981";
-      const probPct = (p.flood_probability * 100).toFixed(1);
+      const band = (p.risk_band || "low").toUpperCase();
+      const color = RISK_COLORS[band] || "#10b981";
+      const probPct = ((p.flood_probability ?? 0) * 100).toFixed(1);
 
       // GeoJSON polygon coordinates in GeoJSON are [lon, lat], Leaflet polygon takes [lat, lon]
+      if (!feature.geometry?.coordinates || !Array.isArray(feature.geometry.coordinates)) return;
       const rings = feature.geometry.coordinates.map((ring) =>
         ring.map(([lon, lat]) => [lat, lon] as [number, number])
       );
@@ -163,12 +166,21 @@ export function LeafletCrisisMap({
         weight: 1,
         opacity: 0.8,
         fillColor: color,
-        fillOpacity: p.risk_band === "CRITICAL" ? 0.45 : p.risk_band === "HIGH" ? 0.35 : 0.2,
+        fillOpacity: band === "CRITICAL" ? 0.45 : band === "HIGH" ? 0.35 : 0.2,
       });
 
-      const explanations = (p.local_explanations || [])
+      const explanations = (Array.isArray(p.local_explanations) ? p.local_explanations : [])
         .slice(0, 3)
-        .map((e) => `<div>• ${escapeHtml(e.feature)}: ${e.direction === "increases_risk" ? "▲" : "▼"}</div>`)
+        .map((e: any) => {
+          const isRisk =
+            e.impact === "increases_hazard" ||
+            e.impact === "increases_hazard_lowland" ||
+            e.impact === "near_river_channel" ||
+            e.direction === "increases_risk";
+          const val = e.observed_value ?? e.value;
+          const valStr = val !== undefined && val !== null ? ` (${Number(val).toFixed(1)})` : "";
+          return `<div>• ${escapeHtml(e.feature)}${valStr}: ${isRisk ? "▲" : "▼"}</div>`;
+        })
         .join("");
 
       const popupHtml = `
@@ -176,15 +188,15 @@ export function LeafletCrisisMap({
           <div style="font-weight:700;font-size:13px;color:#0d1212;margin-bottom:4px;">Zone: ${escapeHtml(p.cell_id)}</div>
           <div style="display:flex;justify-content:space-between;margin:3px 0;">
             <span>Flood Probability:</span>
-            <strong style="color:${color}">${probPct}% (${escapeHtml(p.risk_band)})</strong>
+            <strong style="color:${color}">${probPct}% (${escapeHtml(band)})</strong>
           </div>
           <div style="display:flex;justify-content:space-between;margin:3px 0;">
             <span>Observed 24h Rain:</span>
-            <strong>${p.observed_rain_24h_mm.toFixed(1)} mm</strong>
+            <strong>${(p.observed_rain_24h_mm ?? 0).toFixed(1)} mm</strong>
           </div>
           <div style="display:flex;justify-content:space-between;margin:3px 0;">
             <span>Soil Moisture:</span>
-            <strong>${p.soil_moisture.toFixed(2)} m³/m³</strong>
+            <strong>${(p.soil_moisture ?? 0).toFixed(2)} m³/m³</strong>
           </div>
           ${
             explanations
@@ -212,8 +224,10 @@ export function LeafletCrisisMap({
 
     group.clearLayers();
     if (!showHospitals) return;
+    const safeHospitals = Array.isArray(hospitals) ? hospitals : [];
 
-    hospitals.forEach((h) => {
+    safeHospitals.forEach((h) => {
+      if (!h || typeof h.latitude !== "number" || typeof h.longitude !== "number") return;
       const icon = L.divIcon({
         className: "disaster-pulse-leaflet-marker",
         html: `<div style="width:24px;height:24px;border-radius:50%;background:#2563eb;color:#ffffff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,0.4);border:2px solid #ffffff;">H</div>`,
@@ -247,9 +261,14 @@ export function LeafletCrisisMap({
 
     group.clearLayers();
     if (!showShelters) return;
+    const safeShelters = Array.isArray(shelters) ? shelters : [];
 
-    shelters.forEach((s) => {
-      const isOfficial = s.facility_category === "official_cyclone_shelter";
+    safeShelters.forEach((s) => {
+      if (!s || typeof s.latitude !== "number" || typeof s.longitude !== "number") return;
+      const isOfficial =
+        s.facility_category === "official_cyclone_shelter" ||
+        s.facility_category === "OFFICIAL_SHELTER" ||
+        s.is_official === true;
       const icon = L.divIcon({
         className: "disaster-pulse-leaflet-marker",
         html: `<div style="width:24px;height:24px;border-radius:50%;background:#059669;color:#ffffff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,0.4);border:2px solid #ffffff;">S</div>`,
@@ -283,8 +302,10 @@ export function LeafletCrisisMap({
 
     group.clearLayers();
     if (!showIncidents) return;
+    const safeIncidents = Array.isArray(incidents) ? incidents : [];
 
-    incidents.forEach((inc) => {
+    safeIncidents.forEach((inc) => {
+      if (!inc || typeof inc.latitude !== "number" || typeof inc.longitude !== "number") return;
       const icon = L.divIcon({
         className: "disaster-pulse-leaflet-marker",
         html: `<div style="width:22px;height:22px;border-radius:50%;background:#ea580c;color:#ffffff;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,0.4);border:2px solid #ffffff;">!</div>`,
@@ -328,7 +349,7 @@ export function LeafletCrisisMap({
         opacity: 0.8,
       });
       fastestLine.bindTooltip(
-        `FASTEST: ${routes.fastest.total_distance_km.toFixed(1)} km · ${routes.fastest.risk_verdict}`,
+        `FASTEST: ${(routes.fastest.total_distance_km ?? 0).toFixed(1)} km · ${routes.fastest.risk_verdict || ""}`,
         { sticky: true }
       );
       group.addLayer(fastestLine);
@@ -343,7 +364,7 @@ export function LeafletCrisisMap({
         opacity: 0.95,
       });
       safestLine.bindTooltip(
-        `SAFEST: ${routes.safest.total_distance_km.toFixed(1)} km · ${routes.safest.risk_verdict}`,
+        `SAFEST: ${(routes.safest.total_distance_km ?? 0).toFixed(1)} km · ${routes.safest.risk_verdict || ""}`,
         { sticky: true }
       );
       group.addLayer(safestLine);

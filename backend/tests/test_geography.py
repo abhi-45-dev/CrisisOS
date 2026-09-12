@@ -13,6 +13,7 @@ TAMIL_NADU_LOCATIONS = [
     ("Tiruchirappalli", 10.7905, 78.7047),
     ("Salem", 11.6643, 78.1460),
     ("Tirunelveli", 8.7139, 77.7567),
+    ("Nagercoil", 8.1833, 77.4119),
     ("Kanyakumari", 8.0883, 77.5385),
     ("Thanjavur", 10.7870, 79.1378),
     ("Vellore", 12.9165, 79.1325),
